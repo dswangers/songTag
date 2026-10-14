@@ -398,10 +398,10 @@ export async function searchDiscogsCandidates(
 }
 
 /** Target number of distinct song results to return from a song search. */
-const SONG_SEARCH_RESULTS = 10;
-/** Hard cap on release look-ups per song search (bounds rate-limit cost, since
- *  many pressings of one album de-dupe down to a single result). */
-const SONG_SEARCH_FETCHES = 16;
+const SONG_SEARCH_RESULTS = 6;
+/** Hard cap on release look-ups per song search. Each is a throttled API call,
+ *  so this is the main driver of how long a search takes (~1.1s each). */
+const SONG_SEARCH_FETCHES = 9;
 
 /**
  * Search Discogs for individual tracks (for the Songs tab).
