@@ -6,9 +6,10 @@ import { scanMp3Files } from './scanner';
 import { tagFiles, retagFiles, getRetagCandidates } from './tagService';
 import { isFullyTagged, readExistingTags } from './tagger';
 import { downloadAudio, checkDependencies } from './downloadService';
-import { convertPlaylist, convertAlbum, convertDiscogsAlbum } from './convertService';
-import { searchSpotifyAlbums } from './providers/spotify';
-import { searchDiscogsAlbums } from './providers/discogs';
+import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertSong } from './convertService';
+import { searchSpotifyAlbums, searchSpotifyTracks } from './providers/spotify';
+import { searchDiscogsAlbums, fetchDiscogsAlbumTracks, searchDiscogsSongs } from './providers/discogs';
+import { fetchAlbumViaEmbed } from './spotifyEmbed';
 import {
   getAuthorizeUrl,
   handleCallback,
@@ -388,6 +389,69 @@ app.get('/api/discogs/search-albums', async (req: Request, res: Response) => {
   }
   try {
     res.json({ albums: await searchDiscogsAlbums(q) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Search for individual tracks (for the Songs tab), from either source. */
+app.get('/api/songs/search', async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? '').trim();
+  const source = String(req.query.source ?? 'discogs') === 'spotify' ? 'spotify' : 'discogs';
+  if (!q) {
+    res.status(400).json({ error: 'No search query provided.' });
+    return;
+  }
+  try {
+    const songs = source === 'spotify' ? await searchSpotifyTracks(q) : await searchDiscogsSongs(q);
+    res.json({ songs });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** SSE: convert a single track into a tagged MP3. */
+app.get('/api/convert-song', async (req: Request, res: Response) => {
+  const title = String(req.query.title ?? '').trim();
+  const artist = String(req.query.artist ?? '').trim();
+  const duration = parseInt(String(req.query.duration ?? '0'), 10) || 0;
+  const quality = String(req.query.quality ?? '0');
+  const send = openSse(res);
+
+  if (!title) {
+    send({ type: 'error', message: 'No song provided.' });
+    res.end();
+    return;
+  }
+
+  const job = beginJob(req);
+  try {
+    await convertSong({ title, artist, durationMs: duration }, config.mp3Folder, quality, send, job.signal);
+  } catch (err) {
+    send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    endJob(job);
+    res.end();
+  }
+});
+
+/** Album tracklist preview (name + tracks) for the Albums tab, from either source. */
+app.get('/api/album-tracks', async (req: Request, res: Response) => {
+  const album = String(req.query.album ?? '').trim();
+  const source = String(req.query.source ?? 'spotify') === 'discogs' ? 'discogs' : 'spotify';
+  if (!album) {
+    res.status(400).json({ error: 'No album provided.' });
+    return;
+  }
+  try {
+    const { name, tracks } =
+      source === 'discogs'
+        ? await fetchDiscogsAlbumTracks(album)
+        : await fetchAlbumViaEmbed(album);
+    res.json({
+      name,
+      tracks: tracks.map((t) => ({ title: t.title, artist: t.artist, durationMs: t.durationMs })),
+    });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }

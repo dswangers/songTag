@@ -6,8 +6,9 @@ import { fetchPlaylistViaEmbed, fetchAlbumViaEmbed, type EmbedTrack } from './sp
 import { fetchDiscogsAlbumTracks } from './providers/discogs';
 import { findYouTubeCandidates } from './youtubeMatch';
 import { downloadVideoToFile } from './downloadService';
-import { updateId3Tags } from './tagger';
+import { updateId3Tags, updateAlbumArt } from './tagger';
 import { tagFiles } from './tagService';
+import { downloadImage } from './fetcher';
 
 export type ConvertEvent =
   | { type: 'playlist'; name: string; total: number }
@@ -42,7 +43,8 @@ async function convertTrack(
   folder: string,
   audioQuality: string,
   onEvent: ConvertEventHandler,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  forcedCover?: Buffer | null
 ): Promise<ConvertResult> {
   const label = `${embed.artist} - ${embed.title}`;
   const log = (message: string) => onEvent({ type: 'debug', track: label, message });
@@ -119,6 +121,17 @@ async function convertTrack(
       signal
     );
 
+    // Stamp the user-selected album cover on top of whatever tagging embedded,
+    // so every track carries the exact pressing's artwork they chose.
+    if (forcedCover) {
+      try {
+        updateAlbumArt(finalPath, forcedCover);
+        log('  ✓ applied selected album cover');
+      } catch (err) {
+        log(`  ⚠ could not apply selected cover: ${err instanceof Error ? err.message : err}`);
+      }
+    }
+
     onEvent({ type: 'track-done', track: label, file: path.basename(finalPath) });
     return {
       status: 'ok',
@@ -166,7 +179,8 @@ async function runConversion(
   folder: string,
   audioQuality: string,
   onEvent: ConvertEventHandler,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  forcedCover?: Buffer | null
 ): Promise<void> {
   onEvent({ type: 'playlist', name, total: tracks.length });
 
@@ -178,7 +192,7 @@ async function runConversion(
     if (signal?.aborted) break;
     const track = tracks[i];
     onEvent({ type: 'track-start', index: i, total: tracks.length, track: track.title, artist: track.artist });
-    const result = await convertTrack(track, folder, audioQuality, onEvent, signal);
+    const result = await convertTrack(track, folder, audioQuality, onEvent, signal, forcedCover);
     if (result.status === 'ok') { ok++; if (result.entry) entries.push(result.entry); }
     else if (result.status === 'exists') { exists++; if (result.entry) entries.push(result.entry); }
     else if (result.status === 'skip') skipped++;
@@ -232,8 +246,23 @@ export async function convertAlbum(
 
   fs.mkdirSync(folder, { recursive: true });
 
-  const { name, tracks } = await fetchAlbumViaEmbed(id);
-  await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
+  const { name, tracks, coverArtUrl } = await fetchAlbumViaEmbed(id);
+  const cover = coverArtUrl ? await downloadImage(coverArtUrl) : null;
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover);
+}
+
+/** Convert a single track into a tagged MP3 (for the Songs tab). */
+export async function convertSong(
+  track: { title: string; artist: string; durationMs?: number },
+  folder: string,
+  audioQuality: string,
+  onEvent: ConvertEventHandler,
+  signal?: AbortSignal
+): Promise<void> {
+  if (!track.title) throw new Error('No song title provided.');
+  fs.mkdirSync(folder, { recursive: true });
+  const t: EmbedTrack = { title: track.title, artist: track.artist || '', durationMs: track.durationMs || 0, uri: '' };
+  await runConversion(track.title, [t], folder, audioQuality, onEvent, signal);
 }
 
 /**
@@ -252,6 +281,10 @@ export async function convertDiscogsAlbum(
 
   fs.mkdirSync(folder, { recursive: true });
 
-  const { name, tracks } = await fetchDiscogsAlbumTracks(id, (m) => onEvent({ type: 'debug', track: 'album', message: m }));
-  await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
+  const { name, tracks, coverArtUrl } = await fetchDiscogsAlbumTracks(id, (m) => onEvent({ type: 'debug', track: 'album', message: m }));
+  const cover = coverArtUrl ? await downloadImage(coverArtUrl) : null;
+  if (coverArtUrl) {
+    onEvent({ type: 'debug', track: 'album', message: cover ? '  using selected release cover for all tracks' : '  ⚠ could not download selected cover' });
+  }
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover);
 }

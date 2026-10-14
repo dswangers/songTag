@@ -10,6 +10,17 @@ export interface EmbedTrack {
 export interface EmbedResult {
   name: string;
   tracks: EmbedTrack[];
+  coverArtUrl?: string;
+}
+
+/** Pull the largest cover-art URL out of an embed entity, if present. */
+function embedCoverArt(entity: any): string | undefined {
+  const sources = entity?.coverArt?.sources;
+  if (Array.isArray(sources) && sources.length > 0) {
+    const biggest = sources.reduce((a: any, b: any) => ((b?.width ?? 0) > (a?.width ?? 0) ? b : a));
+    if (biggest?.url) return String(biggest.url);
+  }
+  return undefined;
 }
 
 type Logger = (message: string) => void;
@@ -144,5 +155,5 @@ export async function fetchAlbumViaEmbed(albumId: string): Promise<EmbedResult> 
   if (tracks.length === 0) {
     throw new Error('Album has no readable tracks.');
   }
-  return { name: entity?.name ?? 'Album', tracks };
+  return { name: entity?.name ?? 'Album', tracks, coverArtUrl: embedCoverArt(entity) };
 }

@@ -122,6 +122,24 @@ export function writeId3Tags(
 }
 
 /**
+ * Replace only the embedded album art, leaving all text frames untouched.
+ * Used to stamp a specific chosen album cover onto a downloaded file.
+ */
+export function updateAlbumArt(filePath: string, imageBuffer: Buffer): boolean {
+  const tags: NodeID3.Tags = {
+    image: {
+      mime: mimeFromBuffer(imageBuffer),
+      type: { id: 3, name: 'front cover' },
+      description: 'Cover',
+      imageBuffer,
+    },
+  };
+  const result = NodeID3.update(tags, filePath);
+  if (result === true) return true;
+  throw result instanceof Error ? result : new Error(String(result));
+}
+
+/**
  * Merge-update only the given text fields, leaving everything else (notably any
  * existing embedded cover art) untouched. Used when we have authoritative
  * title/artist but no replacement album art.

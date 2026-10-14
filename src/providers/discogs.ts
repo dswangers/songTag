@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { config } from '../config';
-import type { TrackMetadata, ParsedFilename, Logger, ProviderCandidate, AlbumResult } from '../types';
+import type { TrackMetadata, ParsedFilename, Logger, ProviderCandidate, AlbumResult, SongResult } from '../types';
 
 /** A single track destined for the conversion pipeline (matches EmbedTrack). */
 export interface AlbumTrack {
@@ -221,6 +221,55 @@ function pickArt(result: DiscogsSearchResult | undefined, rel: DiscogsRelease): 
   return primary?.uri ?? rel.images?.[0]?.uri;
 }
 
+/** Split into lowercased, punctuation-free word tokens (so "Fake I.D." == "fake id"). */
+function tokenize(s: string): string[] {
+  return norm(s).split(' ').filter(Boolean);
+}
+
+/**
+ * Title words that mark an alternate / non-standard version. In a song search we
+ * push these below the clean studio version — unless the user explicitly asked
+ * for that version (e.g. searched "... instrumental").
+ */
+const ALT_VERSION_WORDS = new Set([
+  'instrumental', 'remix', 'live', 'acoustic', 'karaoke', 'demo', 'reprise',
+  'dub', 'acapella', 'remaster', 'remastered', 'alternate', 'mono', 'rehearsal',
+  'bonus', 'interlude', 'skit', 'edit', 'rework', 'vip', 'bootleg',
+]);
+
+/**
+ * Find the tracklist entry that best overlaps the query's words. Works even when
+ * the query mixes artist + title (e.g. "joyce manor fake id") because only the
+ * title words will match a track; artist words match nothing. Case- and
+ * punctuation-insensitive via tokenize().
+ */
+function bestTrackByQuery(rel: DiscogsRelease, queryTokens: string[]): { track: DiscogsTrack; number: number; score: number } | null {
+  const tracks = (rel.tracklist ?? []).filter((t) => (t.type_ ? t.type_ === 'track' : true) && t.title);
+  if (tracks.length === 0 || queryTokens.length === 0) return null;
+
+  const wanted = new Set(queryTokens);
+  let bestScore = -Infinity;
+  let bestIdx = -1;
+  tracks.forEach((t, i) => {
+    const tt = tokenize(t.title);
+    if (tt.length === 0) return;
+    let overlap = 0;
+    for (const tok of tt) if (wanted.has(tok)) overlap++;
+    if (overlap === 0) return;
+    // Reward covering both the track's whole title AND more of the query — so an
+    // exact "fake i d" beats a track that merely shares the common word "fake".
+    let score = overlap / tt.length + overlap / wanted.size;
+    // Push alternate versions below the clean one, unless the user asked for it.
+    for (const tok of tt) {
+      if (ALT_VERSION_WORDS.has(tok) && !wanted.has(tok)) score -= 0.6;
+    }
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
+  });
+
+  if (bestIdx < 0) return null;
+  return { track: tracks[bestIdx], number: bestIdx + 1, score: bestScore };
+}
+
 /** Locate the wanted track within a release and compute a human track number. */
 function findTrack(rel: DiscogsRelease, wantTitle: string): { track: DiscogsTrack; number: number } | null {
   // Keep only real audio tracks (drop headings / index entries).
@@ -348,6 +397,81 @@ export async function searchDiscogsCandidates(
   return candidates;
 }
 
+/** Target number of distinct song results to return from a song search. */
+const SONG_SEARCH_RESULTS = 10;
+/** Hard cap on release look-ups per song search (bounds rate-limit cost, since
+ *  many pressings of one album de-dupe down to a single result). */
+const SONG_SEARCH_FETCHES = 16;
+
+/**
+ * Search Discogs for individual tracks (for the Songs tab).
+ *
+ * Uses Discogs' free-text search (the fielded `track=` filter is unreliable —
+ * it returns noise and even drops valid hits when an artist is added), then
+ * opens the top releases and pulls the track whose words best match the query.
+ * Including the artist in the query ("joyce manor fake id") greatly improves
+ * results for common song titles.
+ */
+export async function searchDiscogsSongs(q: string, log: Logger = noop): Promise<SongResult[]> {
+  const data = await discogsGet<{ results: DiscogsSearchResult[] }>(
+    '/database/search',
+    { type: 'release', q, per_page: 40 },
+    log
+  );
+  const results = (data.results ?? []).filter((r) => r.type === 'release' && r.id);
+  if (results.length === 0) {
+    log('  no results from Discogs');
+    return [];
+  }
+
+  const queryTokens = tokenize(q);
+  const found: Array<{ song: SongResult; score: number }> = [];
+  const seen = new Set<string>();
+
+  // Scan releases until we have enough distinct songs or hit the fetch cap.
+  for (let i = 0; i < results.length && found.length < SONG_SEARCH_RESULTS && i < SONG_SEARCH_FETCHES; i++) {
+    const r = results[i];
+    let rel: DiscogsRelease;
+    try {
+      rel = await discogsGet<DiscogsRelease>(`/releases/${r.id}`, {}, log);
+    } catch (err) {
+      log(`  ✗ release ${r.id} lookup failed: ${err instanceof Error ? err.message : err}`);
+      continue;
+    }
+
+    const match = bestTrackByQuery(rel, queryTokens);
+    if (!match) continue;
+
+    const artist = match.track.artists?.[0]?.name
+      ? cleanArtist(match.track.artists[0].name)
+      : rel.artists?.[0]?.name
+        ? cleanArtist(rel.artists[0].name)
+        : '';
+
+    // De-dupe the same song across many pressings of the same release.
+    const key = `${norm(match.track.title)}|${norm(artist)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    found.push({
+      score: match.score,
+      song: {
+        title: match.track.title,
+        artist,
+        album: rel.title,
+        year: rel.year ? String(rel.year) : undefined,
+        trackNumber: String(match.number),
+        albumArtUrl: pickArt(r, rel),
+      },
+    });
+  }
+
+  // Best title matches first (exact beats "shares one common word").
+  found.sort((a, b) => b.score - a.score);
+  log(`  ${found.length} song result(s)`);
+  return found.map((f) => f.song);
+}
+
 // ─── Album search + download (for the Albums tab) ────────────────────────────
 
 /** Search Discogs for albums/releases by free text ("artist album"). */
@@ -372,7 +496,7 @@ export async function searchDiscogsAlbums(q: string, limit = 12, log: Logger = n
 export async function fetchDiscogsAlbumTracks(
   releaseId: string,
   log: Logger = noop
-): Promise<{ name: string; tracks: AlbumTrack[] }> {
+): Promise<{ name: string; coverArtUrl?: string; tracks: AlbumTrack[] }> {
   const rel = await discogsGet<DiscogsRelease>(`/releases/${releaseId}`, {}, log);
   const albumArtist = rel.artists?.[0]?.name ? cleanArtist(rel.artists[0].name) : '';
   const tracks: AlbumTrack[] = (rel.tracklist ?? [])
@@ -384,7 +508,9 @@ export async function fetchDiscogsAlbumTracks(
       uri: '',
     }));
   if (tracks.length === 0) throw new Error('That Discogs release has no readable tracks.');
-  return { name: rel.title, tracks };
+  // This is THE selected pressing's cover — used to tag the downloaded files.
+  const coverArtUrl = pickArt(undefined, rel);
+  return { name: rel.title, coverArtUrl, tracks };
 }
 
 export async function fetchFromDiscogs(

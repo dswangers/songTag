@@ -283,6 +283,78 @@ button#retag-clear {
 }
 .playlist-picker option { padding: 6px 8px; }
 
+/* Albums / Songs tabs — details pane beside the console.
+   The console takes a fixed width; the details pane fills the rest. */
+.preview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 16px;
+  align-items: start;
+}
+.preview-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.preview-pane:empty { display: none; }
+@media (max-width: 900px) {
+  .preview-layout { grid-template-columns: 1fr; }
+}
+
+/* Albums tab — selected-album preview (cover + tracklist) */
+.album-preview {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  margin: 0;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.album-cover {
+  width: 140px;
+  height: 140px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--panel-2);
+}
+.album-tracks { flex: 1; min-width: 0; }
+.album-preview-title { font-size: 16px; font-weight: 600; color: var(--text); }
+.album-preview-sub { font-size: 12.5px; color: var(--muted); margin: 2px 0 10px; }
+.album-tracklist {
+  margin: 0;
+  padding-left: 22px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.album-tracklist li { font-size: 13.5px; color: var(--text); }
+.album-tracklist li::marker { color: var(--muted); font-size: 12px; }
+.album-tracklist .trk-title { }
+.album-tracklist .trk-dur { color: var(--muted); font-size: 12px; margin-left: 8px; }
+
+/* Songs tab — selected-song metadata */
+.song-meta {
+  margin: 8px 0 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 14px;
+  font-size: 13.5px;
+}
+.song-meta dt { color: var(--muted); }
+.song-meta dd { margin: 0; color: var(--text); }
+
+@media (max-width: 560px) {
+  .album-preview { flex-direction: column; }
+  .album-cover { width: 120px; height: 120px; }
+}
+
 /* Review tab */
 .score-badge {
   display: inline-block;

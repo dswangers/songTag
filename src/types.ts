@@ -39,6 +39,17 @@ export interface AlbumResult {
   totalTracks?: number;
 }
 
+/** A single-track search result (for the Songs tab), from Spotify or Discogs. */
+export interface SongResult {
+  title: string;
+  artist: string;
+  album?: string;
+  year?: string;
+  trackNumber?: string;
+  albumArtUrl?: string;
+  durationMs?: number;
+}
+
 /** A ranked metadata match surfaced by a provider (used by the Retag match picker). */
 export interface ProviderCandidate {
   id: string;

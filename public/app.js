@@ -63,7 +63,7 @@ async function cancelActive() {
   if (activeStream) { try { activeStream.close(); } catch { /* ignore */ } activeStream = null; }
 }
 
-[['download-cancel'], ['tag-cancel'], ['convert-cancel'], ['album-cancel'], ['retag-cancel']].forEach(([id]) => {
+[['download-cancel'], ['tag-cancel'], ['convert-cancel'], ['album-cancel'], ['song-cancel'], ['retag-cancel']].forEach(([id]) => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('click', cancelActive);
 });
@@ -599,6 +599,10 @@ async function searchAlbums() {
       const o = document.createElement('option');
       o.value = a.id;
       o.dataset.source = source;
+      o.dataset.name = a.name || '';
+      o.dataset.artist = a.artist || '';
+      o.dataset.year = a.year || '';
+      o.dataset.image = a.imageUrl || '';
       o.dataset.label = `${a.name}${a.artist ? ` — ${a.artist}` : ''}`;
       o.textContent =
         `${a.name}${a.artist ? ` — ${a.artist}` : ''}` +
@@ -614,13 +618,62 @@ async function searchAlbums() {
 
 $('#album-search-btn').addEventListener('click', searchAlbums);
 $('#album-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchAlbums(); });
+function fmtDuration(ms) {
+  if (!ms || ms < 1000) return '';
+  const s = Math.round(ms / 1000);
+  const m = Math.floor(s / 60);
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function showAlbumPreview(opt) {
+  const box = $('#album-chosen');
+  const name = opt.dataset.name || opt.dataset.label || '';
+  const artist = opt.dataset.artist || '';
+  const year = opt.dataset.year || '';
+  const image = opt.dataset.image || '';
+  const heading = `${name}${artist ? ` — ${artist}` : ''}${year ? ` (${year})` : ''}`;
+
+  box.innerHTML =
+    `<div class="album-preview">
+       ${image ? `<img class="album-cover" alt="" />` : ''}
+       <div class="album-tracks">
+         <div class="album-preview-title"></div>
+         <div class="album-preview-sub">via ${albumChosenSource} · loading tracklist…</div>
+         <ol class="album-tracklist"></ol>
+       </div>
+     </div>`;
+  if (image) { const img = box.querySelector('.album-cover'); img.src = image; }
+  box.querySelector('.album-preview-title').textContent = heading;
+
+  try {
+    const qs = new URLSearchParams({ album: albumChosenId, source: albumChosenSource });
+    const resp = await fetch(`/api/album-tracks?${qs.toString()}`);
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || 'Could not load tracklist');
+    const sub = box.querySelector('.album-preview-sub');
+    sub.textContent = `via ${albumChosenSource} · ${data.tracks.length} tracks`;
+    const ol = box.querySelector('.album-tracklist');
+    ol.innerHTML = '';
+    data.tracks.forEach((t) => {
+      const li = document.createElement('li');
+      const dur = fmtDuration(t.durationMs);
+      li.innerHTML = `<span class="trk-title"></span>${dur ? `<span class="trk-dur">${dur}</span>` : ''}`;
+      li.querySelector('.trk-title').textContent = t.title;
+      ol.appendChild(li);
+    });
+  } catch (err) {
+    const sub = box.querySelector('.album-preview-sub');
+    if (sub) sub.textContent = `via ${albumChosenSource} · ${err instanceof Error ? err.message : err}`;
+  }
+}
+
 $('#album-results').addEventListener('change', (e) => {
   const opt = e.target.selectedOptions[0];
   if (!opt || !opt.value) return;
   albumChosenId = opt.value;
   albumChosenSource = opt.dataset.source || 'discogs';
-  $('#album-chosen').textContent = `Selected: ${opt.dataset.label || opt.textContent} (via ${albumChosenSource})`;
   $('#album-convert-btn').disabled = false;
+  showAlbumPreview(opt);
 });
 
 const runAlbumConvert = makeConvertRunner({
@@ -633,6 +686,123 @@ $('#album-convert-btn').addEventListener('click', () => {
   const quality = $('#album-quality').value;
   const qs = new URLSearchParams({ album: albumChosenId, quality, source: albumChosenSource });
   runAlbumConvert(`/api/convert-album?${qs.toString()}`);
+});
+
+// ─── Songs tab (search a single track → tagged MP3) ──────────────────────────
+const songLog = $('#song-log');
+let songChosen = null; // { title, artist, durationMs }
+$('#clear-song-console').addEventListener('click', () => { songLog.textContent = ''; });
+
+async function searchSongs() {
+  const q = $('#song-search').value.trim();
+  if (!q) { $('#song-search').focus(); return; }
+
+  const source = $('#song-source').value === 'spotify' ? 'spotify' : 'discogs';
+  const results = $('#song-results');
+  results.classList.remove('hidden');
+  results.innerHTML = '<option disabled>Searching…</option>';
+  const btn = $('#song-search-btn');
+  btn.disabled = true; btn.textContent = 'Searching…';
+  const showMsg = (msg) => {
+    results.innerHTML = '';
+    const o = document.createElement('option');
+    o.disabled = true; o.textContent = msg;
+    results.appendChild(o);
+  };
+
+  try {
+    const resp = await fetch(`/api/songs/search?q=${encodeURIComponent(q)}&source=${source}`);
+    const data = await resp.json();
+    if (!resp.ok || data.error) { showMsg(data.error || 'Search failed'); return; }
+    if (!data.songs || data.songs.length === 0) { showMsg('No songs found'); return; }
+    results.innerHTML = '';
+    data.songs.forEach((s) => {
+      const o = document.createElement('option');
+      o.value = s.title;
+      o.dataset.title = s.title || '';
+      o.dataset.artist = s.artist || '';
+      o.dataset.album = s.album || '';
+      o.dataset.year = s.year || '';
+      o.dataset.track = s.trackNumber || '';
+      o.dataset.image = s.albumArtUrl || '';
+      o.dataset.duration = s.durationMs || '';
+      o.dataset.source = source;
+      o.textContent =
+        `${s.title}${s.artist ? ` — ${s.artist}` : ''}` +
+        `${s.album ? ` · ${s.album}` : ''}${s.year ? ` (${s.year})` : ''}`;
+      results.appendChild(o);
+    });
+  } catch (e) {
+    showMsg('Search failed');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Search';
+  }
+}
+
+function showSongPreview(opt) {
+  const box = $('#song-chosen');
+  const title = opt.dataset.title || '';
+  const artist = opt.dataset.artist || '';
+  const album = opt.dataset.album || '';
+  const year = opt.dataset.year || '';
+  const track = opt.dataset.track || '';
+  const image = opt.dataset.image || '';
+  const durMs = parseInt(opt.dataset.duration || '0', 10) || 0;
+
+  const rows = [];
+  if (artist) rows.push(['Artist', artist]);
+  if (album) rows.push(['Album', album]);
+  if (year) rows.push(['Year', year]);
+  if (track) rows.push(['Track #', track]);
+  if (durMs) rows.push(['Duration', fmtDuration(durMs)]);
+  rows.push(['Source', opt.dataset.source || '']);
+
+  box.innerHTML =
+    `<div class="album-preview">
+       ${image ? `<img class="album-cover" alt="" />` : ''}
+       <div class="album-tracks">
+         <div class="album-preview-title"></div>
+         <dl class="song-meta"></dl>
+       </div>
+     </div>`;
+  if (image) box.querySelector('.album-cover').src = image;
+  box.querySelector('.album-preview-title').textContent = title;
+  const dl = box.querySelector('.song-meta');
+  rows.forEach(([k, v]) => {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    dl.appendChild(dt); dl.appendChild(dd);
+  });
+}
+
+$('#song-search-btn').addEventListener('click', searchSongs);
+$('#song-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchSongs(); });
+$('#song-results').addEventListener('change', (e) => {
+  const opt = e.target.selectedOptions[0];
+  if (!opt || !opt.value) return;
+  songChosen = {
+    title: opt.dataset.title,
+    artist: opt.dataset.artist,
+    durationMs: parseInt(opt.dataset.duration || '0', 10) || 0,
+  };
+  $('#song-convert-btn').disabled = false;
+  showSongPreview(opt);
+});
+
+const runSongConvert = makeConvertRunner({
+  list: $('#song-list'), log: songLog, bar: $('#song-bar'),
+  progress: $('#song-progress'), summary: $('#song-summary'),
+  btn: $('#song-convert-btn'), btnLabel: 'Download song', cancelId: 'song-cancel',
+});
+$('#song-convert-btn').addEventListener('click', () => {
+  if (!songChosen) { $('#song-search').focus(); return; }
+  const qs = new URLSearchParams({
+    title: songChosen.title,
+    artist: songChosen.artist || '',
+    duration: String(songChosen.durationMs || 0),
+    quality: $('#song-quality').value,
+  });
+  runSongConvert(`/api/convert-song?${qs.toString()}`);
 });
 
 // ─── Retag tab (fix mistakes) ───────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import SpotifyWebApi from 'spotify-web-api-node';
 import { config } from '../config';
 import { searchTracksAsUser, searchAlbumsAsUser } from '../spotifyAuth';
-import type { TrackMetadata, ParsedFilename, Logger, AlbumResult } from '../types';
+import type { TrackMetadata, ParsedFilename, Logger, AlbumResult, SongResult } from '../types';
 
 const noop: Logger = () => {};
 
@@ -251,6 +251,31 @@ export async function searchSpotifyAlbums(q: string, limit = 12): Promise<AlbumR
       year: a.release_date ? a.release_date.slice(0, 4) : undefined,
       imageUrl: a.images?.[a.images.length - 1]?.url ?? a.images?.[0]?.url,
       totalTracks: (a as SpotifyApi.AlbumObjectSimplified & { total_tracks?: number }).total_tracks,
+    }));
+}
+
+/** Search Spotify for individual tracks (for the Songs tab). */
+export async function searchSpotifyTracks(q: string, limit = 15): Promise<SongResult[]> {
+  await ensureToken();
+  const client = getClient();
+
+  const items = await withRetry(async () => {
+    const userResults = await searchTracksAsUser(q, limit);
+    if (userResults !== null) return userResults;
+    const resp = await client.searchTracks(q, { limit });
+    return resp.body.tracks?.items ?? [];
+  }, console.log);
+
+  return items
+    .filter((t) => t && t.id)
+    .map((t) => ({
+      title: t.name,
+      artist: (t.artists ?? []).map((a) => a.name).filter(Boolean).join(', '),
+      album: t.album?.name,
+      year: t.album?.release_date ? t.album.release_date.slice(0, 4) : undefined,
+      trackNumber: t.track_number?.toString(),
+      albumArtUrl: t.album?.images?.[0]?.url,
+      durationMs: t.duration_ms,
     }));
 }
 

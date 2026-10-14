@@ -21,6 +21,7 @@
     <button class="tab" data-tab="tag">🏷 Tag</button>
     <button class="tab" data-tab="convert">🔁 Spotify → MP3</button>
     <button class="tab" data-tab="album">💿 Albums</button>
+    <button class="tab" data-tab="song">🎵 Songs</button>
     <button class="tab" data-tab="retag">✏️ Retag</button>
     <button class="tab" data-tab="review">⚠ Review</button>
   </nav>
@@ -168,21 +169,74 @@
     </div>
 
     <select id="album-results" class="playlist-picker hidden" size="8"></select>
-    <div id="album-chosen" class="count"></div>
 
     <div id="album-progress" class="progressbar hidden">
       <div id="album-bar" class="fill"></div>
     </div>
     <div id="album-summary" class="count"></div>
 
-    <div class="tag-layout">
-      <ul id="album-list" class="files"></ul>
+    <div class="preview-layout">
+      <div class="preview-main">
+        <div id="album-chosen" class="preview-pane"></div>
+        <ul id="album-list" class="files"></ul>
+      </div>
       <div class="console-wrap">
         <div class="console-head">
           <span>Console</span>
           <button id="clear-album-console" class="link-btn">clear</button>
         </div>
         <pre id="album-log" class="log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Songs tab (search a single track → tagged MP3) ───────────── -->
+  <section id="tab-song" class="panel">
+    <div class="controls">
+      <input
+        id="song-search"
+        type="text"
+        placeholder="Search for a song…"
+        autocomplete="off"
+      />
+      <label class="quality">
+        Source
+        <select id="song-source">
+          <option value="discogs">Discogs</option>
+          <option value="spotify">Spotify</option>
+        </select>
+      </label>
+      <button id="song-search-btn" class="primary">Search</button>
+      <label class="quality">
+        Quality
+        <select id="song-quality">
+          <option value="0">Best</option>
+          <option value="2">High</option>
+          <option value="5">Medium</option>
+        </select>
+      </label>
+      <button id="song-convert-btn" class="primary" disabled>Download song</button>
+      <button id="song-cancel" class="cancel-btn" disabled>Cancel</button>
+    </div>
+
+    <select id="song-results" class="playlist-picker hidden" size="8"></select>
+
+    <div id="song-progress" class="progressbar hidden">
+      <div id="song-bar" class="fill"></div>
+    </div>
+    <div id="song-summary" class="count"></div>
+
+    <div class="preview-layout">
+      <div class="preview-main">
+        <div id="song-chosen" class="preview-pane"></div>
+        <ul id="song-list" class="files"></ul>
+      </div>
+      <div class="console-wrap">
+        <div class="console-head">
+          <span>Console</span>
+          <button id="clear-song-console" class="link-btn">clear</button>
+        </div>
+        <pre id="song-log" class="log"></pre>
       </div>
     </div>
   </section>
