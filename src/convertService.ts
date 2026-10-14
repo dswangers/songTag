@@ -108,6 +108,13 @@ async function convertTrack(
       return { status: 'error' };
     }
 
+    // Guard against an extraction that reported success but left no mp3 — never
+    // tag (and thereby create) a ghost file.
+    if (!fs.existsSync(finalPath)) {
+      onEvent({ type: 'track-error', track: label, error: 'download finished but no MP3 was produced (ffmpeg/extraction issue)' });
+      return { status: 'error' };
+    }
+
     if (forcedMeta) {
       // The user picked a specific version (Songs tab) — write exactly that
       // album / year / track# / cover instead of re-searching a provider, so the
@@ -208,7 +215,8 @@ async function runConversion(
   onEvent: ConvertEventHandler,
   signal?: AbortSignal,
   forcedCover?: Buffer | null,
-  forcedMeta?: ForcedMeta | null
+  forcedMeta?: ForcedMeta | null,
+  writePlaylist = true
 ): Promise<void> {
   onEvent({ type: 'playlist', name, total: tracks.length });
 
@@ -227,8 +235,8 @@ async function runConversion(
     else failed++;
   }
 
-  // Write the playlist file for whatever we have so far (even if cancelled).
-  if (entries.length > 0) {
+  // Write an .m3u8 only for actual playlists — not single songs or albums.
+  if (writePlaylist && entries.length > 0) {
     try {
       const file = writePlaylistFile(folder, name, entries);
       onEvent({ type: 'playlist-file', file });
@@ -276,7 +284,7 @@ export async function convertAlbum(
 
   const { name, tracks, coverArtUrl } = await fetchAlbumViaEmbed(id);
   const cover = coverArtUrl ? await downloadImage(coverArtUrl) : null;
-  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover);
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover, null, false);
 }
 
 /** Convert a single track into a tagged MP3 (for the Songs tab). */
@@ -307,7 +315,7 @@ export async function convertSong(
     ? { album: track.album, year: track.year, trackNumber: track.trackNumber }
     : null;
 
-  await runConversion(track.title, [t], folder, audioQuality, onEvent, signal, cover, forcedMeta);
+  await runConversion(track.title, [t], folder, audioQuality, onEvent, signal, cover, forcedMeta, false);
 }
 
 /**
@@ -331,5 +339,5 @@ export async function convertDiscogsAlbum(
   if (coverArtUrl) {
     onEvent({ type: 'debug', track: 'album', message: cover ? '  using selected release cover for all tracks' : '  ⚠ could not download selected cover' });
   }
-  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover);
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover, null, false);
 }

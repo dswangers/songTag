@@ -93,7 +93,9 @@ export function downloadVideoToFile(
     '--no-playlist',
     '--no-mtime',
     '--no-progress',
-    '--force-overwrites',
+    // NB: do NOT use --force-overwrites here — on the audio-extraction path it can
+    // delete the finished mp3. The caller already skips tracks that exist on disk.
+    '--no-continue',         // restart any stale partial cleanly instead
     '--force-ipv4',          // YouTube 403s are frequently IPv6-related
     '--retries', '10',
     '--fragment-retries', '10',
@@ -120,7 +122,12 @@ export function downloadVideoToFile(
 
     const onData = (chunk: Buffer) => {
       for (const line of chunk.toString().split(/\r?\n/)) {
-        if (line.trim()) onLog(line.trimEnd());
+        const t = line.trimEnd();
+        if (!t.trim()) continue;
+        // Benign yt-dlp notice that it removed the intermediate video after
+        // extracting the mp3 — hide it so it doesn't look like an action is needed.
+        if (/Deleting original file|pass -k to keep/i.test(t)) continue;
+        onLog(t);
       }
     };
     child.stdout.on('data', onData);
@@ -188,6 +195,9 @@ export function downloadAudio(
     const handleLine = (line: string): void => {
       const trimmed = line.trimEnd();
       if (!trimmed) return;
+
+      // Hide yt-dlp's benign "removed the intermediate video" notice.
+      if (/Deleting original file|pass -k to keep/i.test(trimmed)) return;
 
       const progressMatch = trimmed.match(PROGRESS_RE);
       if (progressMatch) {
