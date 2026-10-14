@@ -14,8 +14,8 @@ function requireEnv(key: string): string {
 
 function getApiProvider(): ApiProvider {
   const raw = (process.env.API_PROVIDER ?? 'musicbrainz').toLowerCase();
-  if (raw !== 'musicbrainz' && raw !== 'spotify') {
-    throw new Error(`API_PROVIDER must be "musicbrainz" or "spotify", got: "${raw}"`);
+  if (raw !== 'musicbrainz' && raw !== 'spotify' && raw !== 'discogs') {
+    throw new Error(`API_PROVIDER must be "musicbrainz", "spotify", or "discogs", got: "${raw}"`);
   }
   return raw;
 }
@@ -38,5 +38,12 @@ export const config = {
     get clientSecret() { return requireEnv('SPOTIFY_CLIENT_SECRET'); },
     // Must EXACTLY match a Redirect URI registered in the Spotify dashboard.
     redirectUri: process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:4000/callback',
+  },
+
+  discogs: {
+    // Personal access token from https://www.discogs.com/settings/developers
+    get token() { return requireEnv('DISCOGS_TOKEN'); },
+    // Discogs requires a unique, identifying User-Agent (RFC 1945 style).
+    userAgent: process.env.DISCOGS_USER_AGENT ?? 'SongTag/1.0.0 +https://github.com/dswangers/songTag',
   },
 } as const;

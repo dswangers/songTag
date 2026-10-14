@@ -18,6 +18,18 @@ cp .env.example .env   # fill in your API keys
 npm run ui             # start the web UI
 ```
 
+## Metadata providers
+
+Set `API_PROVIDER` in `.env` to choose where tags come from:
+
+- **`discogs`** — rich release database. Generate a free personal access token at
+  [discogs.com/settings/developers](https://www.discogs.com/settings/developers) and
+  put it in `.env` as `DISCOGS_TOKEN`. Authenticated requests get 60/min.
+- **`spotify`** — great metadata, but subject to Spotify API rate limits.
+- **`musicbrainz`** — free, no key required (sparser database).
+
+The provider is used by the **Tag**, **Retag**, and **Spotify → MP3** tabs.
+
 ## Scripts
 
 - `npm run ui` — start the web UI (`src/server.ts`)

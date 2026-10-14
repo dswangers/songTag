@@ -27,4 +27,17 @@ export interface ParsedFilename {
   rawAlbum?: string;
 }
 
-export type ApiProvider = 'musicbrainz' | 'spotify';
+export type ApiProvider = 'musicbrainz' | 'spotify' | 'discogs';
+
+/** A ranked metadata match surfaced by a provider (used by the Retag match picker). */
+export interface ProviderCandidate {
+  id: string;
+  title: string;
+  artist: string;
+  album: string;
+  year?: string;
+  trackNumber?: string;
+  albumArtUrl?: string;
+  score: number;
+  reason: string;
+}

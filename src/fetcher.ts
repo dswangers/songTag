@@ -2,6 +2,7 @@ import axios from 'axios';
 import { config } from './config';
 import { fetchFromMusicBrainz } from './providers/musicbrainz';
 import { fetchFromSpotify } from './providers/spotify';
+import { fetchFromDiscogs } from './providers/discogs';
 import type { TrackMetadata, ParsedFilename, Logger } from './types';
 
 /**
@@ -14,6 +15,9 @@ export async function fetchMetadata(
 ): Promise<TrackMetadata | null> {
   if (config.provider === 'spotify') {
     return fetchFromSpotify(parsed, log);
+  }
+  if (config.provider === 'discogs') {
+    return fetchFromDiscogs(parsed, log);
   }
   return fetchFromMusicBrainz(parsed, log);
 }

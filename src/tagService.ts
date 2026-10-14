@@ -3,8 +3,10 @@ import { parseFilename } from './parser';
 import { fetchMetadata, downloadImage } from './fetcher';
 import { writeId3Tags, readExistingTags } from './tagger';
 import { readYouTubeMetadataHints } from './youtubeInfo';
-import { searchSpotifyCandidates, type SpotifyCandidate } from './providers/spotify';
-import type { TagResult, TrackMetadata, ParsedFilename } from './types';
+import { searchSpotifyCandidates } from './providers/spotify';
+import { searchDiscogsCandidates } from './providers/discogs';
+import { config } from './config';
+import type { TagResult, TrackMetadata, ParsedFilename, ProviderCandidate } from './types';
 
 /** "Artist - Topic" is YouTube's auto-generated music channel naming. */
 function cleanArtist(artist: string): string {
@@ -266,8 +268,11 @@ export interface RetagItem {
   selected?: TrackMetadata;
 }
 
-export async function getRetagCandidates(query: string): Promise<SpotifyCandidate[]> {
-  return searchSpotifyCandidates(parseFilename(query), () => {});
+export async function getRetagCandidates(query: string): Promise<ProviderCandidate[]> {
+  const parsed = parseFilename(query);
+  if (config.provider === 'discogs') return searchDiscogsCandidates(parsed, () => {});
+  // MusicBrainz has no candidate-picker yet; fall back to Spotify search there.
+  return searchSpotifyCandidates(parsed, () => {});
 }
 
 /**
