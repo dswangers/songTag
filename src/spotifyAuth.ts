@@ -106,11 +106,12 @@ export function parsePlaylistId(input: string): string | null {
  */
 export async function searchTracksAsUser(
   q: string,
-  limit = 10
+  limit = 10,
+  offset = 0
 ): Promise<SpotifyApi.TrackObjectFull[] | null> {
   if (!refreshToken) return null;
   const client = await ensureAccess();
-  const resp = await client.searchTracks(q, { limit });
+  const resp = await client.searchTracks(q, { limit, offset });
   return resp.body.tracks?.items ?? [];
 }
 

@@ -255,18 +255,22 @@ export async function searchSpotifyAlbums(q: string, limit = 12): Promise<AlbumR
 }
 
 /** Search Spotify for individual tracks (for the Songs tab). */
-export async function searchSpotifyTracks(q: string, limit = 15): Promise<SongResult[]> {
+export async function searchSpotifyTracks(
+  q: string,
+  limit = 10,
+  offset = 0
+): Promise<{ songs: SongResult[]; nextOffset: number; hasMore: boolean }> {
   await ensureToken();
   const client = getClient();
 
   const items = await withRetry(async () => {
-    const userResults = await searchTracksAsUser(q, limit);
+    const userResults = await searchTracksAsUser(q, limit, offset);
     if (userResults !== null) return userResults;
-    const resp = await client.searchTracks(q, { limit });
+    const resp = await client.searchTracks(q, { limit, offset });
     return resp.body.tracks?.items ?? [];
   }, console.log);
 
-  return items
+  const songs = items
     .filter((t) => t && t.id)
     .map((t) => ({
       title: t.name,
@@ -277,6 +281,9 @@ export async function searchSpotifyTracks(q: string, limit = 15): Promise<SongRe
       albumArtUrl: t.album?.images?.[0]?.url,
       durationMs: t.duration_ms,
     }));
+
+  // No reliable total here, so infer "more" from a full page.
+  return { songs, nextOffset: offset + items.length, hasMore: items.length >= limit };
 }
 
 const MIN_CONFIDENCE = 60;

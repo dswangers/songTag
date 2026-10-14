@@ -45,6 +45,7 @@ interface DiscogsRelease {
   artists?: Array<{ name: string }>;
   images?: Array<{ type: string; uri: string; uri150?: string }>;
   tracklist?: DiscogsTrack[];
+  formats?: Array<{ name?: string; descriptions?: string[] }>;
 }
 
 // ─── Authenticated client + polite throttle ──────────────────────────────────
@@ -227,6 +228,21 @@ function tokenize(s: string): string[] {
 }
 
 /**
+ * Preference for a release's format when picking which pressing of a song to
+ * show: prefer the studio album, demote singles / EPs / compilations. This is
+ * what makes a song search surface the album version rather than a single.
+ */
+function formatScore(rel: DiscogsRelease): number {
+  const descs = (rel.formats ?? []).flatMap((f) => (f.descriptions ?? []).map((d) => d.toLowerCase()));
+  let s = 0;
+  if (descs.some((d) => d.includes('album') || d === 'lp')) s += 0.6;
+  if (descs.some((d) => d === 'ep' || d.includes('mini'))) s -= 0.1;
+  if (descs.some((d) => d.includes('single') || d === '7"')) s -= 0.45;
+  if (descs.some((d) => d.includes('compilation'))) s -= 0.3;
+  return s;
+}
+
+/**
  * Title words that mark an alternate / non-standard version. In a song search we
  * push these below the clean studio version — unless the user explicitly asked
  * for that version (e.g. searched "... instrumental").
@@ -247,7 +263,18 @@ function bestTrackByQuery(rel: DiscogsRelease, queryTokens: string[]): { track: 
   const tracks = (rel.tracklist ?? []).filter((t) => (t.type_ ? t.type_ === 'track' : true) && t.title);
   if (tracks.length === 0 || queryTokens.length === 0) return null;
 
-  const wanted = new Set(queryTokens);
+  // Split the query into the release's artist words vs the song-title words, so
+  // "sleep lagwagon" matches the track "Sleep" on a Lagwagon release — not a
+  // track literally titled "Lagwagon" on some compilation.
+  const artistTokens = new Set(tokenize((rel.artists ?? []).map((a) => a.name).join(' ')));
+  const nonArtist = queryTokens.filter((t) => !artistTokens.has(t));
+  // Only credit an artist match when real title words remain — otherwise a release
+  // whose ARTIST is literally the query (e.g. a band named "Fake I.D.") would get a
+  // spurious boost for unrelated tracks.
+  const artistMatch = nonArtist.length > 0 ? queryTokens.filter((t) => artistTokens.has(t)).length : 0;
+  const titleTokens = nonArtist.length > 0 ? nonArtist : queryTokens;
+  const wanted = new Set(titleTokens);
+
   let bestScore = -Infinity;
   let bestIdx = -1;
   tracks.forEach((t, i) => {
@@ -267,7 +294,15 @@ function bestTrackByQuery(rel: DiscogsRelease, queryTokens: string[]): { track: 
   });
 
   if (bestIdx < 0) return null;
-  return { track: tracks[bestIdx], number: bestIdx + 1, score: bestScore };
+
+  // Boost releases actually credited to the searched artist, and demote live /
+  // alternate releases (e.g. a "Live In A Dive" album) by their title.
+  let score = bestScore + artistMatch * 0.4;
+  for (const tok of tokenize(rel.title)) {
+    if (ALT_VERSION_WORDS.has(tok) && !wanted.has(tok) && !artistTokens.has(tok)) score -= 0.5;
+  }
+
+  return { track: tracks[bestIdx], number: bestIdx + 1, score };
 }
 
 /** Locate the wanted track within a release and compute a human track number. */
@@ -412,24 +447,48 @@ const SONG_SEARCH_FETCHES = 9;
  * Including the artist in the query ("joyce manor fake id") greatly improves
  * results for common song titles.
  */
-export async function searchDiscogsSongs(q: string, log: Logger = noop): Promise<SongResult[]> {
-  const data = await discogsGet<{ results: DiscogsSearchResult[] }>(
-    '/database/search',
-    { type: 'release', q, per_page: 40 },
-    log
-  );
-  const results = (data.results ?? []).filter((r) => r.type === 'release' && r.id);
+export async function searchDiscogsSongs(
+  q: string,
+  log: Logger = noop,
+  offset = 0
+): Promise<{ songs: SongResult[]; nextOffset: number; hasMore: boolean }> {
+  // A plain title search returns releases NAMED that (i.e. singles); the album
+  // containing the track ranks far lower or not at all. So we also run an
+  // album-filtered search and scan those first, which surfaces the album version
+  // and lets it win over the single for the same song.
+  const search = async (params: Record<string, unknown>) =>
+    (await discogsGet<{ results: DiscogsSearchResult[] }>('/database/search', { type: 'release', q, per_page: 40, ...params }, log)).results ?? [];
+  const [albumHits, generalHits] = [await search({ format: 'Album' }), await search({})];
+
+  // Interleave the two lists so we scan album pressings AND the most relevant
+  // (often single) releases within the fetch budget: the album version wins for
+  // the SAME song, while exact matches that only exist as singles still appear.
+  const results: DiscogsSearchResult[] = [];
+  const seenId = new Set<number>();
+  for (let k = 0; k < Math.max(albumHits.length, generalHits.length); k++) {
+    for (const r of [albumHits[k], generalHits[k]]) {
+      if (!r || r.type !== 'release' || !r.id || seenId.has(r.id)) continue;
+      seenId.add(r.id);
+      results.push(r);
+    }
+  }
   if (results.length === 0) {
     log('  no results from Discogs');
-    return [];
+    return { songs: [], nextOffset: offset, hasMore: false };
   }
 
   const queryTokens = tokenize(q);
-  const found: Array<{ song: SongResult; score: number }> = [];
-  const seen = new Set<string>();
+  // Keep the best pressing per distinct song: album pressings outrank singles,
+  // and better title matches outrank weaker ones.
+  const bySong = new Map<string, { song: SongResult; rank: number }>();
 
-  // Scan releases until we have enough distinct songs or hit the fetch cap.
-  for (let i = 0; i < results.length && found.length < SONG_SEARCH_RESULTS && i < SONG_SEARCH_FETCHES; i++) {
+  // Scan releases (starting at `offset`) until we have enough distinct songs for
+  // this batch or hit the per-batch fetch cap. "Show more" calls again with the
+  // returned nextOffset so only the next window of releases is opened.
+  // Fetch the whole per-batch budget (not stopping at the first N distinct) so an
+  // album pressing fetched later can still replace the single already seen.
+  let i = offset;
+  for (; i < results.length && (i - offset) < SONG_SEARCH_FETCHES; i++) {
     const r = results[i];
     let rel: DiscogsRelease;
     try {
@@ -448,13 +507,17 @@ export async function searchDiscogsSongs(q: string, log: Logger = noop): Promise
         ? cleanArtist(rel.artists[0].name)
         : '';
 
-    // De-dupe the same song across many pressings of the same release.
-    const key = `${norm(match.track.title)}|${norm(artist)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const rank = match.score + formatScore(rel);
+    // Key by album too, so a song that appears on two DIFFERENT albums (e.g. an
+    // original and a re-recording) shows both — while many pressings of the SAME
+    // album still collapse to one (their rel.title matches).
+    const key = `${norm(match.track.title)}|${norm(artist)}|${norm(rel.title)}`;
+    const existing = bySong.get(key);
+    // Keep the better-ranked pressing of that album.
+    if (existing && existing.rank >= rank) continue;
 
-    found.push({
-      score: match.score,
+    bySong.set(key, {
+      rank,
       song: {
         title: match.track.title,
         artist,
@@ -466,10 +529,10 @@ export async function searchDiscogsSongs(q: string, log: Logger = noop): Promise
     });
   }
 
-  // Best title matches first (exact beats "shares one common word").
-  found.sort((a, b) => b.score - a.score);
-  log(`  ${found.length} song result(s)`);
-  return found.map((f) => f.song);
+  // Best overall (match quality + album preference) first; cap the batch size.
+  const ranked = [...bySong.values()].sort((a, b) => b.rank - a.rank).slice(0, SONG_SEARCH_RESULTS);
+  log(`  ${ranked.length} song result(s) [offset ${offset}→${i}]`);
+  return { songs: ranked.map((f) => f.song), nextOffset: i, hasMore: i < results.length };
 }
 
 // ─── Album search + download (for the Albums tab) ────────────────────────────

@@ -693,16 +693,47 @@ const songLog = $('#song-log');
 let songChosen = null; // { title, artist, durationMs }
 $('#clear-song-console').addEventListener('click', () => { songLog.textContent = ''; });
 
-async function searchSongs() {
-  const q = $('#song-search').value.trim();
-  if (!q) { $('#song-search').focus(); return; }
+const songSearch = { q: '', source: 'discogs', nextOffset: 0, keys: new Set() };
 
-  const source = $('#song-source').value === 'spotify' ? 'spotify' : 'discogs';
+function appendSongOption(results, s, source, keys) {
+  const key = `${(s.title || '').toLowerCase()}|${(s.artist || '').toLowerCase()}`;
+  if (keys.has(key)) return false;
+  keys.add(key);
+  const o = document.createElement('option');
+  o.value = s.title;
+  o.dataset.title = s.title || '';
+  o.dataset.artist = s.artist || '';
+  o.dataset.album = s.album || '';
+  o.dataset.year = s.year || '';
+  o.dataset.track = s.trackNumber || '';
+  o.dataset.image = s.albumArtUrl || '';
+  o.dataset.duration = s.durationMs || '';
+  o.dataset.source = source;
+  o.textContent =
+    `${s.title}${s.artist ? ` — ${s.artist}` : ''}` +
+    `${s.album ? ` · ${s.album}` : ''}${s.year ? ` (${s.year})` : ''}`;
+  results.appendChild(o);
+  return true;
+}
+
+async function runSongSearch(append) {
   const results = $('#song-results');
-  results.classList.remove('hidden');
-  results.innerHTML = '<option disabled>Searching…</option>';
-  const btn = $('#song-search-btn');
-  btn.disabled = true; btn.textContent = 'Searching…';
+  const moreBtn = $('#song-more');
+  const searchBtn = $('#song-search-btn');
+
+  let q, source;
+  if (append) {
+    q = songSearch.q; source = songSearch.source;
+  } else {
+    q = $('#song-search').value.trim();
+    if (!q) { $('#song-search').focus(); return; }
+    source = $('#song-source').value === 'spotify' ? 'spotify' : 'discogs';
+    songSearch.q = q; songSearch.source = source; songSearch.nextOffset = 0; songSearch.keys = new Set();
+    results.classList.remove('hidden');
+    results.innerHTML = '<option disabled>Searching…</option>';
+    moreBtn.classList.add('hidden');
+  }
+
   const showMsg = (msg) => {
     results.innerHTML = '';
     const o = document.createElement('option');
@@ -710,32 +741,24 @@ async function searchSongs() {
     results.appendChild(o);
   };
 
+  if (append) { moreBtn.disabled = true; moreBtn.textContent = 'Loading…'; }
+  else { searchBtn.disabled = true; searchBtn.textContent = 'Searching…'; }
+
   try {
-    const resp = await fetch(`/api/songs/search?q=${encodeURIComponent(q)}&source=${source}`);
+    const resp = await fetch(`/api/songs/search?q=${encodeURIComponent(q)}&source=${source}&offset=${songSearch.nextOffset}`);
     const data = await resp.json();
-    if (!resp.ok || data.error) { showMsg(data.error || 'Search failed'); return; }
-    if (!data.songs || data.songs.length === 0) { showMsg('No songs found'); return; }
-    results.innerHTML = '';
-    data.songs.forEach((s) => {
-      const o = document.createElement('option');
-      o.value = s.title;
-      o.dataset.title = s.title || '';
-      o.dataset.artist = s.artist || '';
-      o.dataset.album = s.album || '';
-      o.dataset.year = s.year || '';
-      o.dataset.track = s.trackNumber || '';
-      o.dataset.image = s.albumArtUrl || '';
-      o.dataset.duration = s.durationMs || '';
-      o.dataset.source = source;
-      o.textContent =
-        `${s.title}${s.artist ? ` — ${s.artist}` : ''}` +
-        `${s.album ? ` · ${s.album}` : ''}${s.year ? ` (${s.year})` : ''}`;
-      results.appendChild(o);
-    });
+    if (!resp.ok || data.error) { if (!append) showMsg(data.error || 'Search failed'); return; }
+    if (!append) results.innerHTML = '';
+    let added = 0;
+    (data.songs || []).forEach((s) => { if (appendSongOption(results, s, source, songSearch.keys)) added++; });
+    if (typeof data.nextOffset === 'number') songSearch.nextOffset = data.nextOffset;
+    if (!append && added === 0) showMsg('No songs found');
+    moreBtn.classList.toggle('hidden', !data.hasMore);
   } catch (e) {
-    showMsg('Search failed');
+    if (!append) showMsg('Search failed');
   } finally {
-    btn.disabled = false; btn.textContent = 'Search';
+    searchBtn.disabled = false; searchBtn.textContent = 'Search';
+    moreBtn.disabled = false; moreBtn.textContent = 'Show more results';
   }
 }
 
@@ -775,8 +798,9 @@ function showSongPreview(opt) {
   });
 }
 
-$('#song-search-btn').addEventListener('click', searchSongs);
-$('#song-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchSongs(); });
+$('#song-search-btn').addEventListener('click', () => runSongSearch(false));
+$('#song-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') runSongSearch(false); });
+$('#song-more').addEventListener('click', () => runSongSearch(true));
 $('#song-results').addEventListener('change', (e) => {
   const opt = e.target.selectedOptions[0];
   if (!opt || !opt.value) return;

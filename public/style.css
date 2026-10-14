@@ -283,6 +283,21 @@ button#retag-clear {
 }
 .playlist-picker option { padding: 6px 8px; }
 
+.more-btn {
+  display: block;
+  margin: -8px 0 16px;
+  padding: 8px 14px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.more-btn:hover:not(:disabled) { border-color: var(--muted); }
+.more-btn:disabled { color: var(--muted); cursor: default; }
+.more-btn.hidden { display: none; }
+
 /* Albums / Songs tabs — details pane beside the console.
    The console takes a fixed width; the details pane fills the rest. */
 .preview-layout {

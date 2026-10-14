@@ -398,13 +398,16 @@ app.get('/api/discogs/search-albums', async (req: Request, res: Response) => {
 app.get('/api/songs/search', async (req: Request, res: Response) => {
   const q = String(req.query.q ?? '').trim();
   const source = String(req.query.source ?? 'discogs') === 'spotify' ? 'spotify' : 'discogs';
+  const offset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
   if (!q) {
     res.status(400).json({ error: 'No search query provided.' });
     return;
   }
   try {
-    const songs = source === 'spotify' ? await searchSpotifyTracks(q) : await searchDiscogsSongs(q);
-    res.json({ songs });
+    const result = source === 'spotify'
+      ? await searchSpotifyTracks(q, 10, offset)
+      : await searchDiscogsSongs(q, () => {}, offset);
+    res.json(result); // { songs, nextOffset, hasMore }
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
