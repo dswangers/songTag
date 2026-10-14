@@ -419,6 +419,10 @@ app.get('/api/convert-song', async (req: Request, res: Response) => {
   const artist = String(req.query.artist ?? '').trim();
   const duration = parseInt(String(req.query.duration ?? '0'), 10) || 0;
   const quality = String(req.query.quality ?? '0');
+  const album = String(req.query.album ?? '').trim() || undefined;
+  const year = String(req.query.year ?? '').trim() || undefined;
+  const trackNumber = String(req.query.track ?? '').trim() || undefined;
+  const coverArtUrl = String(req.query.cover ?? '').trim() || undefined;
   const send = openSse(res);
 
   if (!title) {
@@ -429,7 +433,13 @@ app.get('/api/convert-song', async (req: Request, res: Response) => {
 
   const job = beginJob(req);
   try {
-    await convertSong({ title, artist, durationMs: duration }, config.mp3Folder, quality, send, job.signal);
+    await convertSong(
+      { title, artist, durationMs: duration, album, year, trackNumber, coverArtUrl },
+      config.mp3Folder,
+      quality,
+      send,
+      job.signal
+    );
   } catch (err) {
     send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
   } finally {

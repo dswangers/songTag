@@ -525,6 +525,7 @@ export async function searchDiscogsSongs(
         year: rel.year ? String(rel.year) : undefined,
         trackNumber: String(match.number),
         albumArtUrl: pickArt(r, rel),
+        durationMs: parseDuration(match.track.duration) || undefined,
       },
     });
   }

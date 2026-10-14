@@ -6,9 +6,16 @@ import { fetchPlaylistViaEmbed, fetchAlbumViaEmbed, type EmbedTrack } from './sp
 import { fetchDiscogsAlbumTracks } from './providers/discogs';
 import { findYouTubeCandidates } from './youtubeMatch';
 import { downloadVideoToFile } from './downloadService';
-import { updateId3Tags, updateAlbumArt } from './tagger';
+import { updateId3Tags, updateAlbumArt, writeId3Tags } from './tagger';
 import { tagFiles } from './tagService';
 import { downloadImage } from './fetcher';
+
+/** Metadata the user explicitly picked for a track (Songs tab selection). */
+interface ForcedMeta {
+  album?: string;
+  year?: string;
+  trackNumber?: string;
+}
 
 export type ConvertEvent =
   | { type: 'playlist'; name: string; total: number }
@@ -44,7 +51,8 @@ async function convertTrack(
   audioQuality: string,
   onEvent: ConvertEventHandler,
   signal?: AbortSignal,
-  forcedCover?: Buffer | null
+  forcedCover?: Buffer | null,
+  forcedMeta?: ForcedMeta | null
 ): Promise<ConvertResult> {
   const label = `${embed.artist} - ${embed.title}`;
   const log = (message: string) => onEvent({ type: 'debug', track: label, message });
@@ -100,35 +108,54 @@ async function convertTrack(
       return { status: 'error' };
     }
 
-    // Seed the authoritative Spotify title/artist as a hint (keeps yt-dlp art),
-    // then run the FULL tagging workflow so the file gets album track numbers etc.
-    updateId3Tags(finalPath, { title: embed.title, artist: embed.artist });
-    log('  running full tagging workflow…');
-    await tagFiles(
-      [finalPath],
-      { concurrency: 1, requestDelayMs: 0 },
-      (e) => {
-        if (e.type === 'debug') log(e.message);
-        else if (e.type === 'success') {
-          log(`  ✓ tagged: ${e.metadata.artist} — ${e.metadata.title}` +
-            (e.metadata.trackNumber ? ` (track #${e.metadata.trackNumber})` : ''));
-        } else if (e.type === 'no-match') {
-          log('  ⚠ full-tag found no match — kept basic title/artist + yt-dlp art');
-        } else if (e.type === 'error') {
-          log(`  ⚠ full-tag error: ${e.error}`);
-        }
-      },
-      signal
-    );
+    if (forcedMeta) {
+      // The user picked a specific version (Songs tab) — write exactly that
+      // album / year / track# / cover instead of re-searching a provider, so the
+      // chosen version (e.g. one album of a song that appears on two) is honoured.
+      writeId3Tags(
+        finalPath,
+        {
+          title: embed.title,
+          artist: embed.artist,
+          album: forcedMeta.album ?? '',
+          year: forcedMeta.year,
+          trackNumber: forcedMeta.trackNumber,
+        },
+        forcedCover ?? null
+      );
+      log(`  ✓ tagged with your selection: ${embed.artist} — ${embed.title}` +
+        (forcedMeta.album ? ` [${forcedMeta.album}]` : '') +
+        (forcedMeta.trackNumber ? ` #${forcedMeta.trackNumber}` : ''));
+    } else {
+      // Seed the authoritative title/artist as a hint (keeps yt-dlp art), then run
+      // the FULL tagging workflow so the file gets album track numbers etc.
+      updateId3Tags(finalPath, { title: embed.title, artist: embed.artist });
+      log('  running full tagging workflow…');
+      await tagFiles(
+        [finalPath],
+        { concurrency: 1, requestDelayMs: 0 },
+        (e) => {
+          if (e.type === 'debug') log(e.message);
+          else if (e.type === 'success') {
+            log(`  ✓ tagged: ${e.metadata.artist} — ${e.metadata.title}` +
+              (e.metadata.trackNumber ? ` (track #${e.metadata.trackNumber})` : ''));
+          } else if (e.type === 'no-match') {
+            log('  ⚠ full-tag found no match — kept basic title/artist + yt-dlp art');
+          } else if (e.type === 'error') {
+            log(`  ⚠ full-tag error: ${e.error}`);
+          }
+        },
+        signal
+      );
 
-    // Stamp the user-selected album cover on top of whatever tagging embedded,
-    // so every track carries the exact pressing's artwork they chose.
-    if (forcedCover) {
-      try {
-        updateAlbumArt(finalPath, forcedCover);
-        log('  ✓ applied selected album cover');
-      } catch (err) {
-        log(`  ⚠ could not apply selected cover: ${err instanceof Error ? err.message : err}`);
+      // Stamp the user-selected album cover on top of whatever tagging embedded.
+      if (forcedCover) {
+        try {
+          updateAlbumArt(finalPath, forcedCover);
+          log('  ✓ applied selected album cover');
+        } catch (err) {
+          log(`  ⚠ could not apply selected cover: ${err instanceof Error ? err.message : err}`);
+        }
       }
     }
 
@@ -180,7 +207,8 @@ async function runConversion(
   audioQuality: string,
   onEvent: ConvertEventHandler,
   signal?: AbortSignal,
-  forcedCover?: Buffer | null
+  forcedCover?: Buffer | null,
+  forcedMeta?: ForcedMeta | null
 ): Promise<void> {
   onEvent({ type: 'playlist', name, total: tracks.length });
 
@@ -192,7 +220,7 @@ async function runConversion(
     if (signal?.aborted) break;
     const track = tracks[i];
     onEvent({ type: 'track-start', index: i, total: tracks.length, track: track.title, artist: track.artist });
-    const result = await convertTrack(track, folder, audioQuality, onEvent, signal, forcedCover);
+    const result = await convertTrack(track, folder, audioQuality, onEvent, signal, forcedCover, forcedMeta);
     if (result.status === 'ok') { ok++; if (result.entry) entries.push(result.entry); }
     else if (result.status === 'exists') { exists++; if (result.entry) entries.push(result.entry); }
     else if (result.status === 'skip') skipped++;
@@ -253,7 +281,15 @@ export async function convertAlbum(
 
 /** Convert a single track into a tagged MP3 (for the Songs tab). */
 export async function convertSong(
-  track: { title: string; artist: string; durationMs?: number },
+  track: {
+    title: string;
+    artist: string;
+    durationMs?: number;
+    album?: string;
+    year?: string;
+    trackNumber?: string;
+    coverArtUrl?: string;
+  },
   folder: string,
   audioQuality: string,
   onEvent: ConvertEventHandler,
@@ -262,7 +298,16 @@ export async function convertSong(
   if (!track.title) throw new Error('No song title provided.');
   fs.mkdirSync(folder, { recursive: true });
   const t: EmbedTrack = { title: track.title, artist: track.artist || '', durationMs: track.durationMs || 0, uri: '' };
-  await runConversion(track.title, [t], folder, audioQuality, onEvent, signal);
+
+  // If the user picked a specific result, honour its exact album/cover/metadata
+  // instead of re-searching (so the chosen version of the song is downloaded).
+  const hasSelection = !!(track.album || track.year || track.trackNumber || track.coverArtUrl);
+  const cover = track.coverArtUrl ? await downloadImage(track.coverArtUrl) : null;
+  const forcedMeta: ForcedMeta | null = hasSelection
+    ? { album: track.album, year: track.year, trackNumber: track.trackNumber }
+    : null;
+
+  await runConversion(track.title, [t], folder, audioQuality, onEvent, signal, cover, forcedMeta);
 }
 
 /**

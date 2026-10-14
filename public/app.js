@@ -808,6 +808,10 @@ $('#song-results').addEventListener('change', (e) => {
     title: opt.dataset.title,
     artist: opt.dataset.artist,
     durationMs: parseInt(opt.dataset.duration || '0', 10) || 0,
+    album: opt.dataset.album || '',
+    year: opt.dataset.year || '',
+    trackNumber: opt.dataset.track || '',
+    cover: opt.dataset.image || '',
   };
   $('#song-convert-btn').disabled = false;
   showSongPreview(opt);
@@ -825,6 +829,10 @@ $('#song-convert-btn').addEventListener('click', () => {
     artist: songChosen.artist || '',
     duration: String(songChosen.durationMs || 0),
     quality: $('#song-quality').value,
+    album: songChosen.album || '',
+    year: songChosen.year || '',
+    track: songChosen.trackNumber || '',
+    cover: songChosen.cover || '',
   });
   runSongConvert(`/api/convert-song?${qs.toString()}`);
 });
