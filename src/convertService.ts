@@ -2,7 +2,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { config } from './config';
 import { parsePlaylistId } from './spotifyAuth';
-import { fetchPlaylistViaEmbed, type EmbedTrack } from './spotifyEmbed';
+import { fetchPlaylistViaEmbed, fetchAlbumViaEmbed, type EmbedTrack } from './spotifyEmbed';
+import { fetchDiscogsAlbumTracks } from './providers/discogs';
 import { findYouTubeCandidates } from './youtubeMatch';
 import { downloadVideoToFile } from './downloadService';
 import { updateId3Tags } from './tagger';
@@ -89,6 +90,7 @@ async function convertTrack(
         if (signal?.aborted) return { status: 'skip' };
         log(`  ✗ download failed (${err instanceof Error ? err.message : err}); trying next candidate…`);
       }
+      if (signal?.aborted) return { status: 'skip' };
     }
 
     if (!finalPath) {
@@ -144,24 +146,28 @@ function writePlaylistFile(
   return fileName;
 }
 
+/** Extract a Spotify album ID from a URL, URI, or raw 22-char ID. */
+export function parseAlbumId(input: string): string | null {
+  const trimmed = input.trim();
+  const urlMatch = trimmed.match(/album[/:]([A-Za-z0-9]+)/);
+  if (urlMatch) return urlMatch[1];
+  if (/^[A-Za-z0-9]{22}$/.test(trimmed)) return trimmed;
+  return null;
+}
+
 /**
- * Convert a Spotify playlist into tagged MP3s: read the track list from the
- * embed page, match the best official-audio YouTube video, download, run the
- * full tagging workflow, and finally write an M3U8 playlist.
+ * Shared conversion loop: for each track, match the best official-audio YouTube
+ * video, download, run the full tagging workflow, and finally write an M3U8
+ * playlist listing everything that was fetched.
  */
-export async function convertPlaylist(
-  playlistInput: string,
+async function runConversion(
+  name: string,
+  tracks: EmbedTrack[],
   folder: string,
   audioQuality: string,
   onEvent: ConvertEventHandler,
   signal?: AbortSignal
 ): Promise<void> {
-  const id = parsePlaylistId(playlistInput);
-  if (!id) throw new Error('Could not parse a Spotify playlist ID from that input.');
-
-  fs.mkdirSync(folder, { recursive: true });
-
-  const { name, tracks } = await fetchPlaylistViaEmbed(id);
   onEvent({ type: 'playlist', name, total: tracks.length });
 
   let ok = 0, skipped = 0, failed = 0, exists = 0;
@@ -191,4 +197,61 @@ export async function convertPlaylist(
 
   if (signal?.aborted) onEvent({ type: 'cancelled' });
   onEvent({ type: 'done', ok, skipped, failed, exists, total: tracks.length });
+}
+
+/**
+ * Convert a Spotify playlist into tagged MP3s. Reads the track list from the
+ * embed page (paging past the embed's 100-track cap when Spotify allows).
+ */
+export async function convertPlaylist(
+  playlistInput: string,
+  folder: string,
+  audioQuality: string,
+  onEvent: ConvertEventHandler,
+  signal?: AbortSignal
+): Promise<void> {
+  const id = parsePlaylistId(playlistInput);
+  if (!id) throw new Error('Could not parse a Spotify playlist ID from that input.');
+
+  fs.mkdirSync(folder, { recursive: true });
+
+  const { name, tracks } = await fetchPlaylistViaEmbed(id, (m) => onEvent({ type: 'debug', track: 'playlist', message: m }));
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
+}
+
+/** Convert a whole Spotify album into tagged MP3s (same pipeline as playlists). */
+export async function convertAlbum(
+  albumInput: string,
+  folder: string,
+  audioQuality: string,
+  onEvent: ConvertEventHandler,
+  signal?: AbortSignal
+): Promise<void> {
+  const id = parseAlbumId(albumInput);
+  if (!id) throw new Error('Could not parse a Spotify album ID from that input.');
+
+  fs.mkdirSync(folder, { recursive: true });
+
+  const { name, tracks } = await fetchAlbumViaEmbed(id);
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
+}
+
+/**
+ * Convert a Discogs release (album) into tagged MP3s. Reads the track list
+ * straight from the Discogs release — no Spotify needed.
+ */
+export async function convertDiscogsAlbum(
+  releaseId: string,
+  folder: string,
+  audioQuality: string,
+  onEvent: ConvertEventHandler,
+  signal?: AbortSignal
+): Promise<void> {
+  const id = releaseId.trim().replace(/^\[?r/i, '').replace(/[^0-9]/g, '');
+  if (!id) throw new Error('Could not parse a Discogs release ID from that input.');
+
+  fs.mkdirSync(folder, { recursive: true });
+
+  const { name, tracks } = await fetchDiscogsAlbumTracks(id, (m) => onEvent({ type: 'debug', track: 'album', message: m }));
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
 }

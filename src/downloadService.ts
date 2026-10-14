@@ -5,6 +5,21 @@ import * as path from 'path';
 const execFileAsync = promisify(execFile);
 
 /**
+ * Forcefully terminate a spawned process AND its children. yt-dlp launches
+ * ffmpeg as a child, and on Windows a plain SIGTERM only kills yt-dlp itself —
+ * leaving ffmpeg to finish the current file, which makes cancellation feel like
+ * it hangs. taskkill /T kills the whole tree so a batch stops immediately.
+ */
+function killProcessTree(pid?: number): void {
+  if (!pid) return;
+  if (process.platform === 'win32') {
+    execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => { /* best effort */ });
+  } else {
+    try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+  }
+}
+
+/**
  * Events emitted while yt-dlp runs.
  */
 export type DownloadEvent =
@@ -92,11 +107,16 @@ export function downloadVideoToFile(
 
     let child;
     try {
-      child = spawn('yt-dlp', args, { windowsHide: true, signal });
+      child = spawn('yt-dlp', args, { windowsHide: true });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
       return;
     }
+
+    // Kill the whole yt-dlp/ffmpeg tree on cancel so the current file stops now.
+    const onAbort = () => killProcessTree(child.pid);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
 
     const onData = (chunk: Buffer) => {
       for (const line of chunk.toString().split(/\r?\n/)) {
@@ -106,10 +126,12 @@ export function downloadVideoToFile(
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
 
-    child.on('error', (err) =>
-      reject(signal?.aborted ? new Error('cancelled') : err)
-    );
+    child.on('error', (err) => {
+      cleanup();
+      reject(signal?.aborted ? new Error('cancelled') : err);
+    });
     child.on('close', (code) => {
+      cleanup();
       if (signal?.aborted) reject(new Error('cancelled'));
       else if (code === 0) resolve(`${outBase}.mp3`);
       else reject(new Error(`yt-dlp exited with code ${code}`));
@@ -146,7 +168,7 @@ export function downloadAudio(
 
     let child;
     try {
-      child = spawn('yt-dlp', args, { windowsHide: true, signal });
+      child = spawn('yt-dlp', args, { windowsHide: true });
     } catch (err) {
       onEvent({
         type: 'error',
@@ -155,6 +177,11 @@ export function downloadAudio(
       resolve(1);
       return;
     }
+
+    // Kill the whole yt-dlp/ffmpeg tree on cancel so the download stops now.
+    const onAbort = () => killProcessTree(child.pid);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const cleanup = () => signal?.removeEventListener('abort', onAbort);
 
     let stdoutBuffer = '';
 
@@ -194,6 +221,7 @@ export function downloadAudio(
     });
 
     child.on('error', (err) => {
+      cleanup();
       if (signal?.aborted) { onEvent({ type: 'cancelled' }); resolve(1); return; }
       onEvent({
         type: 'error',
@@ -205,6 +233,7 @@ export function downloadAudio(
     });
 
     child.on('close', (code) => {
+      cleanup();
       if (signal?.aborted) { onEvent({ type: 'cancelled' }); resolve(1); return; }
       if (stdoutBuffer.trim()) handleLine(stdoutBuffer);
       onEvent({ type: 'done', code: code ?? 0 });

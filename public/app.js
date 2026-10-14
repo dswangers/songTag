@@ -63,7 +63,7 @@ async function cancelActive() {
   if (activeStream) { try { activeStream.close(); } catch { /* ignore */ } activeStream = null; }
 }
 
-[['download-cancel'], ['tag-cancel'], ['convert-cancel'], ['retag-cancel']].forEach(([id]) => {
+[['download-cancel'], ['tag-cancel'], ['convert-cancel'], ['album-cancel'], ['retag-cancel']].forEach(([id]) => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('click', cancelActive);
 });
@@ -133,6 +133,7 @@ downloadBtn.addEventListener('click', () => {
 
   const qs = new URLSearchParams({ url, playlist: String(playlist), quality, overwrite: String(overwrite) });
   let es;
+  const downloaded = []; // filenames saved this run, for auto-tagging
 
   const finish = () => {
     downloadBtn.disabled = false;
@@ -161,6 +162,7 @@ downloadBtn.addEventListener('click', () => {
         break;
       case 'item-done':
         appendLog(log, `✓ Saved: ${ev.file}`, 'line-ok');
+        downloaded.push(ev.file);
         break;
       case 'error':
         appendLog(log, `✗ ${ev.message}`, 'line-error');
@@ -172,12 +174,70 @@ downloadBtn.addEventListener('click', () => {
         bar.style.width = '100%';
         appendLog(log, `\nFinished (exit code ${ev.code}).`, 'line-ok');
         es.close();
-        finish();
+        // Auto-tag the files we just downloaded (uses the configured provider).
+        if ($('#auto-tag').checked && downloaded.length > 0) {
+          autoTagDownloaded(downloaded, log, bar, finish);
+        } else {
+          finish();
+        }
         break;
     }
   }, finish);
-  activeStream = { close: () => es.close() };
+  activeStream = { close: () => { es.close(); appendLog(log, '\n⛔ Cancelled.', 'line-warn'); finish(); } };
 });
+
+/** Chain tagging onto a finished download, streaming results into the same log. */
+function autoTagDownloaded(files, log, bar, done) {
+  appendLog(log, `\n🏷 Auto-tagging ${files.length} file(s)…`, 'line-head');
+  bar.style.width = '0%';
+  downloadBtn.textContent = 'Tagging…';
+  let total = files.length, processed = 0;
+  const qs = new URLSearchParams({ files: files.join('\n') });
+  const es = streamSse(`/api/tag-files?${qs.toString()}`, (ev) => {
+    switch (ev.type) {
+      case 'start':
+        total = ev.total || total;
+        break;
+      case 'file-start':
+        appendLog(log, `\n▶ ${ev.filename}`, 'line-head');
+        break;
+      case 'debug':
+        appendLog(log, ev.message, classForDebug(ev.message));
+        break;
+      case 'success':
+        processed++;
+        appendLog(log,
+          `✓ ${ev.metadata.artist} — ${ev.metadata.title}` +
+          `${ev.metadata.album ? ` [${ev.metadata.album}]` : ''}` +
+          `${ev.metadata.trackNumber ? ` #${ev.metadata.trackNumber}` : ''}`,
+          'line-ok');
+        bar.style.width = `${(processed / total) * 100}%`;
+        break;
+      case 'no-match':
+        processed++;
+        appendLog(log, `? no match: ${ev.filename}`, 'line-warn');
+        bar.style.width = `${(processed / total) * 100}%`;
+        break;
+      case 'error':
+        processed++;
+        appendLog(log, `✗ ${ev.filename}: ${ev.error}`, 'line-error');
+        bar.style.width = `${(processed / total) * 100}%`;
+        break;
+      case 'cancelled':
+        appendLog(log, `\n⛔ Cancelled.`, 'line-warn');
+        break;
+      case 'done':
+        bar.style.width = '100%';
+        appendLog(log,
+          `\n🏷 Auto-tag complete — ${ev.results.filter((r) => r.success).length}/${ev.results.length} tagged.`,
+          'line-ok');
+        es.close();
+        done();
+        break;
+    }
+  }, done);
+  activeStream = { close: () => { es.close(); appendLog(log, '\n⛔ Cancelled.', 'line-warn'); done(); } };
+}
 
 // ─── Tag tab ────────────────────────────────────────────────────────────────
 const fileListEl = $('#file-list');
@@ -305,15 +365,13 @@ tagBtn.addEventListener('click', async () => {
         break;
     }
   }, finish);
-  activeStream = { close: () => es.close() };
+  activeStream = { close: () => { es.close(); appendLog(tagLog, '\n⛔ Cancelled.', 'line-warn'); finish(); } };
 });
 
 $('#refresh-btn').addEventListener('click', loadFiles);
 
 // ─── Convert tab (Spotify → MP3) ────────────────────────────────────────────
 const convLog = $('#convert-log');
-const convList = $('#convert-list');
-const convNodes = new Map();
 
 async function refreshSpotifyStatus() {
   try {
@@ -387,111 +445,194 @@ $('#playlist-picker').addEventListener('change', (e) => {
 
 $('#clear-convert-console').addEventListener('click', () => { convLog.textContent = ''; });
 
-function ensureConvNode(label) {
-  let li = convNodes.get(label);
-  if (!li) {
-    li = document.createElement('li');
-    li.innerHTML = `<span class="status">•</span><span class="name"></span><span class="detail"></span>`;
-    li.querySelector('.name').textContent = label;
-    convList.appendChild(li);
-    convNodes.set(label, li);
-  }
-  return li;
-}
-function setConvState(label, state, ch, detail) {
-  const li = ensureConvNode(label);
-  li.className = state;
-  li.querySelector('.status').textContent = ch;
-  if (detail !== undefined) li.querySelector('.detail').textContent = detail;
-}
-
-const convertBtn = $('#convert-btn');
-convertBtn.addEventListener('click', () => {
-  const playlist = $('#playlist-input').value.trim();
-  if (!playlist) { $('#playlist-input').focus(); return; }
-
-  const quality = $('#convert-quality').value;
-  const bar = $('#convert-bar');
-  $('#convert-progress').classList.remove('hidden');
-  bar.style.width = '0%';
-  convLog.textContent = '';
-  convList.innerHTML = '';
-  convNodes.clear();
-  $('#convert-summary').textContent = '';
-  convertBtn.disabled = true;
-  convertBtn.textContent = 'Converting…';
-
-  let total = 0, processed = 0;
-  const finish = () => {
-    convertBtn.disabled = false;
-    convertBtn.textContent = 'Convert';
-    setRunning('convert-cancel', false);
-    activeStream = null;
+// Shared converter stream runner — both the Convert (playlist) and Albums tabs
+// stream the identical ConvertEvent protocol, so they share this renderer.
+function makeConvertRunner(els) {
+  const nodes = new Map();
+  const ensureNode = (label) => {
+    let li = nodes.get(label);
+    if (!li) {
+      li = document.createElement('li');
+      li.innerHTML = `<span class="status">•</span><span class="name"></span><span class="detail"></span>`;
+      li.querySelector('.name').textContent = label;
+      els.list.appendChild(li);
+      nodes.set(label, li);
+    }
+    return li;
+  };
+  const setState = (label, state, ch, detail) => {
+    const li = ensureNode(label);
+    li.className = state;
+    li.querySelector('.status').textContent = ch;
+    if (detail !== undefined) li.querySelector('.detail').textContent = detail;
   };
 
-  setRunning('convert-cancel', true);
-  const qs = new URLSearchParams({ playlist, quality });
-  const es = streamSse(`/api/convert?${qs.toString()}`, (ev) => {
-    switch (ev.type) {
-      case 'playlist':
-        total = ev.total;
-        $('#convert-summary').textContent = `Playlist "${ev.name}" — ${ev.total} tracks`;
-        appendLog(convLog, `Playlist: ${ev.name} (${ev.total} tracks)\n`, 'line-head');
-        break;
-      case 'track-start':
-        setConvState(`${ev.artist} - ${ev.track}`, 'working', '⟳', 'searching…');
-        appendLog(convLog, `\n▶ ${ev.artist} - ${ev.track}`, 'line-head');
-        break;
-      case 'debug':
-        appendLog(convLog, ev.message, classForDebug(ev.message));
-        break;
-      case 'matched':
-        setConvState(ev.track, 'working', '⟳', `↳ ${ev.videoTitle} — ${ev.channel}`);
-        break;
-      case 'track-done':
-        processed++;
-        setConvState(ev.track, 'success', '✓', ev.file);
-        bar.style.width = `${(processed / total) * 100}%`;
-        break;
-      case 'track-skip':
-        processed++;
-        setConvState(ev.track, 'nomatch', '?', ev.reason);
-        appendLog(convLog, `? skipped: ${ev.reason}`, 'line-warn');
-        bar.style.width = `${(processed / total) * 100}%`;
-        break;
-      case 'track-exists':
-        processed++;
-        setConvState(ev.track, 'success', '⏭', `already downloaded (${ev.file})`);
-        appendLog(convLog, `⏭ already downloaded: ${ev.file}`, 'line-dim');
-        bar.style.width = `${(processed / total) * 100}%`;
-        break;
-      case 'track-error':
-        processed++;
-        setConvState(ev.track, 'error', '✗', ev.error);
-        appendLog(convLog, `✗ ${ev.error}`, 'line-error');
-        bar.style.width = `${(processed / total) * 100}%`;
-        break;
-      case 'playlist-file':
-        appendLog(convLog, `\n📃 wrote playlist: ${ev.file}`, 'line-ok');
-        break;
-      case 'cancelled':
-        appendLog(convLog, `\n⛔ Cancelled.`, 'line-warn');
-        break;
-      case 'done':
-        bar.style.width = '100%';
-        $('#convert-summary').textContent =
-          `Done — ${ev.ok} downloaded, ${ev.exists || 0} already had, ${ev.skipped} skipped, ${ev.failed} failed (of ${ev.total})`;
-        es.close();
-        finish();
-        break;
-      case 'error':
-        appendLog(convLog, `✗ ${ev.message}`, 'line-error');
-        es.close();
-        finish();
-        break;
-    }
-  }, finish);
-  activeStream = { close: () => es.close() };
+  return function start(streamUrl) {
+    els.progress.classList.remove('hidden');
+    els.bar.style.width = '0%';
+    els.log.textContent = '';
+    els.list.innerHTML = '';
+    nodes.clear();
+    els.summary.textContent = '';
+    els.btn.disabled = true;
+    els.btn.textContent = 'Converting…';
+
+    let total = 0, processed = 0;
+    const finish = () => {
+      els.btn.disabled = false;
+      els.btn.textContent = els.btnLabel;
+      setRunning(els.cancelId, false);
+      activeStream = null;
+    };
+    setRunning(els.cancelId, true);
+
+    const es = streamSse(streamUrl, (ev) => {
+      switch (ev.type) {
+        case 'playlist':
+          total = ev.total;
+          els.summary.textContent = `"${ev.name}" — ${ev.total} tracks`;
+          appendLog(els.log, `${ev.name} (${ev.total} tracks)\n`, 'line-head');
+          break;
+        case 'track-start':
+          setState(`${ev.artist} - ${ev.track}`, 'working', '⟳', 'searching…');
+          appendLog(els.log, `\n▶ ${ev.artist} - ${ev.track}`, 'line-head');
+          break;
+        case 'debug':
+          appendLog(els.log, ev.message, classForDebug(ev.message));
+          break;
+        case 'matched':
+          setState(ev.track, 'working', '⟳', `↳ ${ev.videoTitle} — ${ev.channel}`);
+          break;
+        case 'track-done':
+          processed++;
+          setState(ev.track, 'success', '✓', ev.file);
+          els.bar.style.width = `${(processed / total) * 100}%`;
+          break;
+        case 'track-skip':
+          processed++;
+          setState(ev.track, 'nomatch', '?', ev.reason);
+          appendLog(els.log, `? skipped: ${ev.reason}`, 'line-warn');
+          els.bar.style.width = `${(processed / total) * 100}%`;
+          break;
+        case 'track-exists':
+          processed++;
+          setState(ev.track, 'success', '⏭', `already downloaded (${ev.file})`);
+          appendLog(els.log, `⏭ already downloaded: ${ev.file}`, 'line-dim');
+          els.bar.style.width = `${(processed / total) * 100}%`;
+          break;
+        case 'track-error':
+          processed++;
+          setState(ev.track, 'error', '✗', ev.error);
+          appendLog(els.log, `✗ ${ev.error}`, 'line-error');
+          els.bar.style.width = `${(processed / total) * 100}%`;
+          break;
+        case 'playlist-file':
+          appendLog(els.log, `\n📃 wrote playlist: ${ev.file}`, 'line-ok');
+          break;
+        case 'cancelled':
+          appendLog(els.log, `\n⛔ Cancelled.`, 'line-warn');
+          break;
+        case 'done':
+          els.bar.style.width = '100%';
+          els.summary.textContent =
+            `Done — ${ev.ok} downloaded, ${ev.exists || 0} already had, ${ev.skipped} skipped, ${ev.failed} failed (of ${ev.total})`;
+          es.close();
+          finish();
+          break;
+        case 'error':
+          appendLog(els.log, `✗ ${ev.message}`, 'line-error');
+          es.close();
+          finish();
+          break;
+      }
+    }, finish);
+    // Cancel must also reset the UI immediately — closing the stream alone would
+    // leave the button stuck on "Converting…".
+    activeStream = { close: () => { es.close(); appendLog(els.log, '\n⛔ Cancelled.', 'line-warn'); finish(); } };
+  };
+}
+
+// Convert tab (Spotify playlist → MP3)
+const runPlaylistConvert = makeConvertRunner({
+  list: $('#convert-list'), log: convLog, bar: $('#convert-bar'),
+  progress: $('#convert-progress'), summary: $('#convert-summary'),
+  btn: $('#convert-btn'), btnLabel: 'Convert', cancelId: 'convert-cancel',
+});
+$('#convert-btn').addEventListener('click', () => {
+  const playlist = $('#playlist-input').value.trim();
+  if (!playlist) { $('#playlist-input').focus(); return; }
+  const quality = $('#convert-quality').value;
+  runPlaylistConvert(`/api/convert?${new URLSearchParams({ playlist, quality }).toString()}`);
+});
+
+// ─── Albums tab (search Spotify album → tagged MP3s) ─────────────────────────
+const albumLog = $('#album-log');
+let albumChosenId = '';
+let albumChosenSource = 'discogs';
+$('#clear-album-console').addEventListener('click', () => { albumLog.textContent = ''; });
+
+async function searchAlbums() {
+  const q = $('#album-search').value.trim();
+  if (!q) { $('#album-search').focus(); return; }
+
+  const source = $('#album-source').value === 'spotify' ? 'spotify' : 'discogs';
+  const results = $('#album-results');
+  results.classList.remove('hidden');
+  results.innerHTML = '<option disabled>Searching…</option>';
+  const btn = $('#album-search-btn');
+  btn.disabled = true; btn.textContent = 'Searching…';
+  const showMsg = (msg) => {
+    results.innerHTML = '';
+    const o = document.createElement('option');
+    o.disabled = true; o.textContent = msg;
+    results.appendChild(o);
+  };
+
+  try {
+    const endpoint = source === 'spotify' ? '/api/spotify/search-albums' : '/api/discogs/search-albums';
+    const resp = await fetch(`${endpoint}?q=${encodeURIComponent(q)}`);
+    const data = await resp.json();
+    if (!resp.ok || data.error) { showMsg(data.error || 'Search failed'); return; }
+    if (!data.albums || data.albums.length === 0) { showMsg('No albums found'); return; }
+    results.innerHTML = '';
+    data.albums.forEach((a) => {
+      const o = document.createElement('option');
+      o.value = a.id;
+      o.dataset.source = source;
+      o.dataset.label = `${a.name}${a.artist ? ` — ${a.artist}` : ''}`;
+      o.textContent =
+        `${a.name}${a.artist ? ` — ${a.artist}` : ''}` +
+        `${a.year ? ` (${a.year})` : ''}${a.totalTracks ? ` · ${a.totalTracks} tracks` : ''}`;
+      results.appendChild(o);
+    });
+  } catch (e) {
+    showMsg('Search failed');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Search';
+  }
+}
+
+$('#album-search-btn').addEventListener('click', searchAlbums);
+$('#album-search').addEventListener('keydown', (e) => { if (e.key === 'Enter') searchAlbums(); });
+$('#album-results').addEventListener('change', (e) => {
+  const opt = e.target.selectedOptions[0];
+  if (!opt || !opt.value) return;
+  albumChosenId = opt.value;
+  albumChosenSource = opt.dataset.source || 'discogs';
+  $('#album-chosen').textContent = `Selected: ${opt.dataset.label || opt.textContent} (via ${albumChosenSource})`;
+  $('#album-convert-btn').disabled = false;
+});
+
+const runAlbumConvert = makeConvertRunner({
+  list: $('#album-list'), log: albumLog, bar: $('#album-bar'),
+  progress: $('#album-progress'), summary: $('#album-summary'),
+  btn: $('#album-convert-btn'), btnLabel: 'Download album', cancelId: 'album-cancel',
+});
+$('#album-convert-btn').addEventListener('click', () => {
+  if (!albumChosenId) { $('#album-search').focus(); return; }
+  const quality = $('#album-quality').value;
+  const qs = new URLSearchParams({ album: albumChosenId, quality, source: albumChosenSource });
+  runAlbumConvert(`/api/convert-album?${qs.toString()}`);
 });
 
 // ─── Retag tab (fix mistakes) ───────────────────────────────────────────────

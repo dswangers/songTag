@@ -114,6 +114,20 @@ export async function searchTracksAsUser(
   return resp.body.tracks?.items ?? [];
 }
 
+/**
+ * Search albums using the user's OAuth token (higher rate limit than Client
+ * Credentials). Returns null if the user is not connected.
+ */
+export async function searchAlbumsAsUser(
+  q: string,
+  limit = 12
+): Promise<SpotifyApi.AlbumObjectSimplified[] | null> {
+  if (!refreshToken) return null;
+  const client = await ensureAccess();
+  const resp = await client.searchAlbums(q, { limit });
+  return resp.body.albums?.items ?? [];
+}
+
 /** List the logged-in user's playlists (paginated). */
 export async function getUserPlaylists(): Promise<PlaylistSummary[]> {
   const client = await ensureAccess();

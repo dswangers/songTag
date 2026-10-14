@@ -1,7 +1,7 @@
 import SpotifyWebApi from 'spotify-web-api-node';
 import { config } from '../config';
-import { searchTracksAsUser } from '../spotifyAuth';
-import type { TrackMetadata, ParsedFilename, Logger } from '../types';
+import { searchTracksAsUser, searchAlbumsAsUser } from '../spotifyAuth';
+import type { TrackMetadata, ParsedFilename, Logger, AlbumResult } from '../types';
 
 const noop: Logger = () => {};
 
@@ -225,6 +225,33 @@ export async function searchSpotifyCandidates(
     score: Math.round(c.score),
     reason: c.reason,
   }));
+}
+
+/**
+ * Search Spotify for albums (for the Albums tab). Prefers the user's OAuth token
+ * when connected, falling back to Client Credentials otherwise.
+ */
+export async function searchSpotifyAlbums(q: string, limit = 12): Promise<AlbumResult[]> {
+  await ensureToken();
+  const client = getClient();
+
+  const items = await withRetry(async () => {
+    const userResults = await searchAlbumsAsUser(q, limit);
+    if (userResults !== null) return userResults;
+    const resp = await client.searchAlbums(q, { limit });
+    return resp.body.albums?.items ?? [];
+  }, console.log);
+
+  return items
+    .filter((a) => a && a.id)
+    .map((a) => ({
+      id: a.id,
+      name: a.name,
+      artist: (a.artists ?? []).map((ar) => ar.name).filter(Boolean).join(', '),
+      year: a.release_date ? a.release_date.slice(0, 4) : undefined,
+      imageUrl: a.images?.[a.images.length - 1]?.url ?? a.images?.[0]?.url,
+      totalTracks: (a as SpotifyApi.AlbumObjectSimplified & { total_tracks?: number }).total_tracks,
+    }));
 }
 
 const MIN_CONFIDENCE = 60;

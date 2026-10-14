@@ -29,6 +29,16 @@ export interface ParsedFilename {
 
 export type ApiProvider = 'musicbrainz' | 'spotify' | 'discogs';
 
+/** An album search result (for the Albums tab), from Spotify or Discogs. */
+export interface AlbumResult {
+  id: string;
+  name: string;
+  artist: string;
+  year?: string;
+  imageUrl?: string;
+  totalTracks?: number;
+}
+
 /** A ranked metadata match surfaced by a provider (used by the Retag match picker). */
 export interface ProviderCandidate {
   id: string;

@@ -1,6 +1,14 @@
 import axios, { AxiosInstance } from 'axios';
 import { config } from '../config';
-import type { TrackMetadata, ParsedFilename, Logger, ProviderCandidate } from '../types';
+import type { TrackMetadata, ParsedFilename, Logger, ProviderCandidate, AlbumResult } from '../types';
+
+/** A single track destined for the conversion pipeline (matches EmbedTrack). */
+export interface AlbumTrack {
+  title: string;
+  artist: string;
+  durationMs: number;
+  uri: string;
+}
 
 const DISCOGS_BASE = 'https://api.discogs.com';
 const noop: Logger = () => {};
@@ -26,6 +34,7 @@ interface DiscogsTrack {
   position: string;
   type_?: string;
   title: string;
+  duration?: string; // "m:ss"
   artists?: Array<{ name: string }>;
 }
 
@@ -125,6 +134,16 @@ const VERSION_WORDS = ['demo', 'live', 'remaster', 'remastered', 'alternate', 'i
 /** Discogs disambiguates duplicate artist names with a "(2)" suffix — strip it. */
 function cleanArtist(name: string): string {
   return name.replace(/\s*\(\d+\)\s*$/, '').trim();
+}
+
+/** Parse a Discogs "m:ss" / "h:mm:ss" duration string into milliseconds (0 if absent). */
+function parseDuration(value?: string): number {
+  if (!value) return 0;
+  const parts = value.split(':').map((p) => parseInt(p, 10));
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  let seconds = 0;
+  for (const p of parts) seconds = seconds * 60 + p;
+  return seconds * 1000;
 }
 
 /** Cheap pre-ranking of a search result (no API call) so we fetch the best releases first. */
@@ -327,6 +346,45 @@ export async function searchDiscogsCandidates(
   }
 
   return candidates;
+}
+
+// ─── Album search + download (for the Albums tab) ────────────────────────────
+
+/** Search Discogs for albums/releases by free text ("artist album"). */
+export async function searchDiscogsAlbums(q: string, limit = 12, log: Logger = noop): Promise<AlbumResult[]> {
+  const data = await discogsGet<{ results: DiscogsSearchResult[] }>(
+    '/database/search',
+    { type: 'release', q, per_page: limit },
+    log
+  );
+  const results = (data.results ?? []).filter((r) => r.id);
+  return results.map((r) => {
+    // Discogs formats release titles as "Artist - Album".
+    const parts = r.title.split(' - ');
+    const artist = parts.length > 1 ? parts[0].trim() : '';
+    const name = parts.length > 1 ? parts.slice(1).join(' - ').trim() : r.title;
+    const art = r.cover_image && !/spacer\.gif/.test(r.cover_image) ? r.cover_image : r.thumb;
+    return { id: String(r.id), name, artist, year: r.year, imageUrl: art, totalTracks: undefined };
+  });
+}
+
+/** Fetch a Discogs release and return its track list for the conversion pipeline. */
+export async function fetchDiscogsAlbumTracks(
+  releaseId: string,
+  log: Logger = noop
+): Promise<{ name: string; tracks: AlbumTrack[] }> {
+  const rel = await discogsGet<DiscogsRelease>(`/releases/${releaseId}`, {}, log);
+  const albumArtist = rel.artists?.[0]?.name ? cleanArtist(rel.artists[0].name) : '';
+  const tracks: AlbumTrack[] = (rel.tracklist ?? [])
+    .filter((t) => (t.type_ ? t.type_ === 'track' : true) && t.title)
+    .map((t) => ({
+      title: t.title,
+      artist: t.artists?.[0]?.name ? cleanArtist(t.artists[0].name) : albumArtist,
+      durationMs: parseDuration(t.duration),
+      uri: '',
+    }));
+  if (tracks.length === 0) throw new Error('That Discogs release has no readable tracks.');
+  return { name: rel.title, tracks };
 }
 
 export async function fetchFromDiscogs(

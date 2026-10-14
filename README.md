@@ -1,6 +1,16 @@
 # SongTag
 
-A local three-tab app for building an MP3 library: **download** tracks, **tag** them with metadata (MusicBrainz / Spotify), and convert Spotify playlists to MP3s.
+A local web app for building an MP3 library:
+
+- **Download** — pull audio from a YouTube URL or playlist (yt-dlp), and optionally
+  auto-tag each file the moment it finishes downloading.
+- **Tag / Retag / Review** — fill in ID3 metadata from a provider (Discogs, Spotify,
+  or MusicBrainz), fix bad matches, and review low-confidence tags.
+- **Spotify → MP3** — convert a Spotify playlist into tagged MP3s (reads the track
+  list and fetches matching audio from YouTube). Pages past the embed's 100-track
+  cap when Spotify allows.
+- **Albums** — search **Discogs or Spotify** for an album and download the whole
+  thing as tagged MP3s.
 
 ## Song library
 
@@ -28,7 +38,9 @@ Set `API_PROVIDER` in `.env` to choose where tags come from:
 - **`spotify`** — great metadata, but subject to Spotify API rate limits.
 - **`musicbrainz`** — free, no key required (sparser database).
 
-The provider is used by the **Tag**, **Retag**, and **Spotify → MP3** tabs.
+The provider is used by the **Tag**, **Retag**, **Spotify → MP3**, and **Albums**
+tabs, plus auto-tagging on the **Download** tab. The **Albums** tab can search
+either Discogs or Spotify regardless of the configured tagging provider.
 
 ## Scripts
 

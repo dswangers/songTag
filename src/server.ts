@@ -1,11 +1,14 @@
 import express, { Request, Response } from 'express';
 import * as path from 'path';
+import * as fs from 'fs';
 import { config } from './config';
 import { scanMp3Files } from './scanner';
 import { tagFiles, retagFiles, getRetagCandidates } from './tagService';
 import { isFullyTagged, readExistingTags } from './tagger';
 import { downloadAudio, checkDependencies } from './downloadService';
-import { convertPlaylist } from './convertService';
+import { convertPlaylist, convertAlbum, convertDiscogsAlbum } from './convertService';
+import { searchSpotifyAlbums } from './providers/spotify';
+import { searchDiscogsAlbums } from './providers/discogs';
 import {
   getAuthorizeUrl,
   handleCallback,
@@ -227,6 +230,47 @@ app.get('/api/download', async (req: Request, res: Response) => {
 });
 
 /**
+ * SSE: tag a specific set of just-downloaded files (used by "auto-tag after
+ * download"). Files are passed by basename; anything already fully tagged is
+ * skipped. Runs the normal tagging pipeline (uses yt-dlp metadata hints).
+ */
+app.get('/api/tag-files', async (req: Request, res: Response) => {
+  const send = openSse(res);
+  const job = beginJob(req);
+
+  try {
+    const raw = String(req.query.files ?? '').trim();
+    const names = raw ? raw.split('\n').map((s) => s.trim()).filter(Boolean) : [];
+    const includeTagged = String(req.query.all ?? 'false') === 'true';
+
+    // basename guards against path traversal; keep only existing .mp3 files.
+    let files = names
+      .map((n) => path.join(config.mp3Folder, path.basename(n)))
+      .filter((p) => p.toLowerCase().endsWith('.mp3') && fs.existsSync(p));
+    files = Array.from(new Set(files));
+    if (!includeTagged) files = files.filter((f) => !isFullyTagged(f));
+
+    if (files.length === 0) {
+      send({ type: 'done', results: [] });
+      res.end();
+      return;
+    }
+
+    await tagFiles(
+      files,
+      { concurrency: config.concurrency, requestDelayMs: config.requestDelayMs },
+      send,
+      job.signal
+    );
+  } catch (err) {
+    send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    endJob(job);
+    res.end();
+  }
+});
+
+/**
  * SSE: tag every MP3 in the target folder.
  */
 app.get('/api/tag', async (req: Request, res: Response) => {
@@ -313,6 +357,62 @@ app.get('/api/convert', async (req: Request, res: Response) => {
   const job = beginJob(req);
   try {
     await convertPlaylist(playlist, config.mp3Folder, quality, send, job.signal);
+  } catch (err) {
+    send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+  } finally {
+    endJob(job);
+    res.end();
+  }
+});
+
+/** Search Spotify for albums (for the Albums tab). */
+app.get('/api/spotify/search-albums', async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q) {
+    res.status(400).json({ error: 'No search query provided.' });
+    return;
+  }
+  try {
+    res.json({ albums: await searchSpotifyAlbums(q) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Search Discogs for albums (for the Albums tab). */
+app.get('/api/discogs/search-albums', async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q) {
+    res.status(400).json({ error: 'No search query provided.' });
+    return;
+  }
+  try {
+    res.json({ albums: await searchDiscogsAlbums(q) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** SSE: convert a whole album (Spotify or Discogs) into tagged MP3s. */
+app.get('/api/convert-album', async (req: Request, res: Response) => {
+  const album = String(req.query.album ?? '').trim();
+  const quality = String(req.query.quality ?? '0');
+  const source = String(req.query.source ?? 'spotify') === 'discogs' ? 'discogs' : 'spotify';
+  const send = openSse(res);
+
+  if (!album) {
+    send({ type: 'error', message: 'No album provided.' });
+    res.end();
+    return;
+  }
+
+  const job = beginJob(req);
+  try {
+    if (source === 'discogs') {
+      await convertDiscogsAlbum(album, config.mp3Folder, quality, send, job.signal);
+    } else {
+      await convertAlbum(album, config.mp3Folder, quality, send, job.signal);
+    }
   } catch (err) {
     send({ type: 'error', message: err instanceof Error ? err.message : String(err) });
   } finally {
