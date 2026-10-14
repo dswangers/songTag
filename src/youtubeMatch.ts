@@ -37,6 +37,13 @@ function normalize(s: string): string {
     .trim();
 }
 
+/** Download/search noise words that aren't part of the real song title. */
+const TITLE_NOISE = new Set([
+  'mp3', 'audio', 'official', 'video', 'lyrics', 'lyric', 'hd', 'hq', '4k',
+  'full', 'album', 'music', 'visualizer', 'visualiser', 'explicit', 'clean',
+  'feat', 'ft', 'the', 'a', 'an',
+]);
+
 /** yt-dlp's --flat-playlist JSON entry (only the fields we read). */
 interface FlatEntry {
   id?: string;
@@ -74,7 +81,7 @@ async function searchYouTube(query: string, n: number, signal?: AbortSignal): Pr
  * Score one candidate against the wanted track.
  * Heavily favours official audio (Topic / artist channels) and exact duration.
  */
-function scoreCandidate(
+export function scoreCandidate(
   c: YtCandidate,
   want: { title: string; artist: string; durationSec: number }
 ): { score: number; reason: string } {
@@ -92,20 +99,28 @@ function scoreCandidate(
   if (isTopic) { score += 55; reasons.push('official audio (Topic)'); }
   else if (artistInChannel) { score += 30; reasons.push('artist channel'); }
 
-  // ── Title relevance ─────────────────────────────────────────────────────────
-  const titleTokens = wTitle.split(' ').filter((t) => t.length > 1);
-  const titleHit = titleTokens.length > 0 && titleTokens.every((t) => nTitle.includes(t));
-  if (titleHit) { score += 18; reasons.push('title match'); }
+  // ── Title relevance (#1 priority) ───────────────────────────────────────────
+  // The right song is decided by its TITLE. A title mismatch is disqualifying so
+  // that a wrong song can never win on a coincidentally-matching duration.
+  const titleTokens = wTitle.split(' ').filter((t) => t.length > 1 && !TITLE_NOISE.has(t));
+  const matched = titleTokens.filter((t) => nTitle.includes(t)).length;
+  const ratio = titleTokens.length > 0 ? matched / titleTokens.length : 0;
+  if (titleTokens.length === 0) {
+    /* nothing meaningful to match on; lean on channel + duration */
+  } else if (ratio >= 0.999) { score += 60; reasons.push('exact title'); }
+  else if (ratio >= 0.75) { score += 25; reasons.push('most of title'); }
+  else if (ratio >= 0.5) { score -= 15; reasons.push('partial title'); }
+  else { score -= 70; reasons.push('title mismatch'); }
   if (wArtist && nTitle.includes(wArtist)) { score += 8; reasons.push('artist in title'); }
 
-  // ── Duration match (very reliable) ──────────────────────────────────────────
+  // ── Duration match (tiebreaker only — must not override the title) ──────────
   if (want.durationSec > 0 && c.durationSec > 0) {
     const diff = Math.abs(c.durationSec - want.durationSec);
-    if (diff <= 2) { score += 35; reasons.push('exact duration'); }
-    else if (diff <= 5) { score += 20; reasons.push('≈ duration'); }
-    else if (diff <= 12) { score += 5; }
-    else if (diff <= 30) { score -= 20; reasons.push(`${diff}s off`); }
-    else { score -= 45; reasons.push(`${diff}s off (wrong version?)`); }
+    if (diff <= 2) { score += 18; reasons.push('exact duration'); }
+    else if (diff <= 5) { score += 10; reasons.push('≈ duration'); }
+    else if (diff <= 12) { score += 3; }
+    else if (diff <= 30) { score -= 12; reasons.push(`${diff}s off`); }
+    else { score -= 25; reasons.push(`${diff}s off (wrong version?)`); }
   }
 
   // ── Negative keywords (only if not part of the real track title) ────────────
