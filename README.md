@@ -2,9 +2,13 @@
 
 A local three-tab app for building an MP3 library: **download** tracks, **tag** them with metadata (MusicBrainz / Spotify), and convert Spotify playlists to MP3s.
 
-## Links
+## Song library
 
-- [Google Drive folder](https://drive.google.com/drive/folders/1-mWYjWTXxjWJj9CFujkcxUU91HygcjSs?usp=sharing)
+The MP3 library isn't stored in this repo. It lives in Google Drive:
+
+- [Song library (Google Drive)](https://drive.google.com/drive/folders/1-mWYjWTXxjWJj9CFujkcxUU91HygcjSs?usp=sharing)
+
+Download it into a local `music/` folder (gitignored) to use with the app.
 
 ## Setup
 
