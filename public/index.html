@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SongTag</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>🎵 SongTag</h1>
+    <div class="meta">
+      <span id="meta-folder">Folder: …</span>
+      <span id="meta-provider">Provider: …</span>
+      <span id="meta-health" class="health">Checking dependencies…</span>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="download">⬇ Download</button>
+    <button class="tab" data-tab="tag">🏷 Tag</button>
+    <button class="tab" data-tab="convert">🔁 Spotify → MP3</button>
+    <button class="tab" data-tab="retag">✏️ Retag</button>
+    <button class="tab" data-tab="review">⚠ Review</button>
+  </nav>
+
+  <!-- ─── Download tab ─────────────────────────────────────────── -->
+  <section id="tab-download" class="panel active">
+    <div class="controls">
+      <input
+        id="url"
+        type="text"
+        placeholder="Paste a YouTube video or playlist URL…"
+        autocomplete="off"
+      />
+      <label class="checkbox">
+        <input id="playlist" type="checkbox" />
+        Download entire playlist
+      </label>
+      <label class="quality">
+        Quality
+        <select id="quality">
+          <option value="0">Best</option>
+          <option value="2">High</option>
+          <option value="5">Medium</option>
+          <option value="9">Low</option>
+        </select>
+      </label>
+      <button id="download-btn" class="primary">Download</button>
+      <button id="download-cancel" class="cancel-btn" disabled>Cancel</button>
+    </div>
+    <div id="download-progress" class="progressbar hidden">
+      <div id="download-bar" class="fill"></div>
+    </div>
+    <pre id="download-log" class="log"></pre>
+  </section>
+
+  <!-- ─── Tag tab ──────────────────────────────────────────────── -->
+  <section id="tab-tag" class="panel">
+    <div class="controls">
+      <button id="refresh-btn">↻ Refresh file list</button>
+      <button id="tag-btn" class="primary">Tag untagged files</button>
+      <button id="tag-cancel" class="cancel-btn" disabled>Cancel</button>
+      <label class="checkbox">
+        <input id="show-tagged" type="checkbox" />
+        Show already-tagged
+      </label>
+      <label class="checkbox">
+        <input id="show-console" type="checkbox" checked />
+        Debug console
+      </label>
+      <span id="tag-count" class="count"></span>
+    </div>
+    <div id="tag-progress" class="progressbar hidden">
+      <div id="tag-bar" class="fill"></div>
+    </div>
+    <div class="tag-layout">
+      <ul id="file-list" class="files"></ul>
+      <div id="console-wrap" class="console-wrap">
+        <div class="console-head">
+          <span>Console</span>
+          <button id="clear-console" class="link-btn">clear</button>
+        </div>
+        <pre id="tag-log" class="log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Convert tab (Spotify playlist → tagged MP3s) ──────────────── -->
+  <section id="tab-convert" class="panel">
+    <div class="spotify-bar">
+      <span id="spotify-status" class="health">Spotify: checking…</span>
+      <button id="spotify-connect" class="primary hidden">Connect Spotify</button>
+      <button id="spotify-logout" class="link-btn hidden">disconnect</button>
+    </div>
+
+    <div class="controls">
+      <input
+        id="playlist-input"
+        type="text"
+        placeholder="Spotify playlist URL or ID…"
+        autocomplete="off"
+      />
+      <button id="load-playlists-btn">My playlists ▾</button>
+      <label class="quality">
+        Quality
+        <select id="convert-quality">
+          <option value="0">Best</option>
+          <option value="2">High</option>
+          <option value="5">Medium</option>
+        </select>
+      </label>
+      <button id="convert-btn" class="primary">Convert</button>
+      <button id="convert-cancel" class="cancel-btn" disabled>Cancel</button>
+    </div>
+
+    <select id="playlist-picker" class="playlist-picker hidden" size="6"></select>
+
+    <div id="convert-progress" class="progressbar hidden">
+      <div id="convert-bar" class="fill"></div>
+    </div>
+    <div id="convert-summary" class="count"></div>
+
+    <div class="tag-layout">
+      <ul id="convert-list" class="files"></ul>
+      <div class="console-wrap">
+        <div class="console-head">
+          <span>Console</span>
+          <button id="clear-convert-console" class="link-btn">clear</button>
+        </div>
+        <pre id="convert-log" class="log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Retag tab (fix mistakes) ──────────────────────────────────── -->
+  <section id="tab-retag" class="panel">
+    <div class="controls">
+      <input id="retag-filter" type="text" placeholder="Filter songs…" autocomplete="off" />
+      <button id="retag-refresh">↻ Refresh</button>
+      <button id="retag-find">Find matches</button>
+      <button id="retag-selectall">Select all shown</button>
+      <button id="retag-clear">Clear</button>
+      <button id="retag-btn" class="primary">Retag selected</button>
+      <button id="retag-cancel" class="cancel-btn" disabled>Cancel</button>
+      <span id="retag-count" class="count"></span>
+    </div>
+    <p class="hint-line">
+      Searches from the <b>filename</b> (or your edited text), ignoring current tags —
+      so wrong tags get corrected. Edit a row's text to fix the search.
+    </p>
+    <div id="retag-progress" class="progressbar hidden"><div id="retag-bar" class="fill"></div></div>
+
+    <div class="tag-layout">
+      <div id="retag-list" class="retag-list"></div>
+      <div class="console-wrap">
+        <div class="console-head">
+          <span>Console</span>
+          <button id="retag-clear-console" class="link-btn">clear</button>
+        </div>
+        <pre id="retag-log" class="log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Review tab (low-confidence tags) ─────────────────────────────────── -->
+  <section id="tab-review" class="panel">
+    <div class="controls">
+      <button id="review-refresh">↻ Refresh</button>
+      <button id="review-retag-btn" class="primary" disabled>Retag selected in Retag tab</button>
+      <span id="review-count" class="count"></span>
+    </div>
+    <p class="hint-line">
+      Tagged files where the confidence score is below <b>80</b> — likely wrong tags.
+      Select rows and click <b>Retag selected</b> to send them to the Retag tab.
+    </p>
+    <div id="review-list" class="retag-list"></div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

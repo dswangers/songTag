@@ -1,0 +1,29 @@
+{
+  "name": "songtag",
+  "version": "1.0.0",
+  "description": "Batch MP3 metadata tagger using MusicBrainz and Spotify APIs",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "ui": "ts-node src/server.ts",
+    "tag": "ts-node src/index.ts",
+    "tag:cli": "ts-node src/index.ts"
+  },
+  "keywords": ["mp3", "id3", "music", "tagger", "metadata"],
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "node-id3": "^0.2.6",
+    "spotify-web-api-node": "^5.0.2"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "@types/spotify-web-api-node": "^5.0.11",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.5"
+  }
+}

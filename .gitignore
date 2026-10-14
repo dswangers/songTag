@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+*.mp3
+.spotify-token.json
+
+# Songs library (local only)
+music/
+
+# Runtime logs / scratch output
+*.err
+*.out
+fake.txt
