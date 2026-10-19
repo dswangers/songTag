@@ -469,7 +469,9 @@ button#retag-clear {
 .mt-field.mt-narrow { }
 .manual-grid input[type="text"],
 .manual-grid select {
+  flex: none; /* reset the global input flex-basis, which is a vertical size here */
   width: 100%;
+  box-sizing: border-box;
   padding: 7px 9px;
   background: var(--panel-2);
   border: 1px solid var(--border);
