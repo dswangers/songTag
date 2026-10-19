@@ -281,8 +281,9 @@ app.get('/api/download', async (req: Request, res: Response) => {
   const playlist = String(req.query.playlist ?? 'false') === 'true';
   const audioQuality = String(req.query.quality ?? '0');
   const overwrite = String(req.query.overwrite ?? 'false') === 'true';
-  // When tagging from source metadata, keep yt-dlp's .info.json sidecar.
-  const sourceMeta = String(req.query.sourceMeta ?? 'false') === 'true';
+  // Keep yt-dlp's .info.json sidecar so auto-tagging can use the source's real
+  // artist/album (as search hints, or directly in source-metadata mode).
+  const writeInfoJson = String(req.query.infoJson ?? 'false') === 'true';
 
   const send = openSse(res);
 
@@ -295,7 +296,7 @@ app.get('/api/download', async (req: Request, res: Response) => {
   const job = beginJob(req);
   try {
     await downloadAudio(
-      { url, folder: config.mp3Folder, playlist, audioQuality, overwrite, writeInfoJson: sourceMeta },
+      { url, folder: config.mp3Folder, playlist, audioQuality, overwrite, writeInfoJson },
       send,
       job.signal
     );

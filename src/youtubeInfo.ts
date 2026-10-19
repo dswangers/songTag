@@ -16,6 +16,8 @@ export interface YouTubeMetadataHints {
   year?: string;
   /** Best available cover/thumbnail URL (e.g. SoundCloud track artwork). */
   artworkUrl?: string;
+  /** True when the artwork is square (a real cover) rather than a 16:9 video frame. */
+  artworkIsSquare?: boolean;
 }
 
 interface YtDlpThumbnail {
@@ -49,20 +51,53 @@ function upscaleArtwork(url: string): string {
   return url.replace(/-large(\.(?:jpg|jpeg|png|gif))(\?.*)?$/i, '-t500x500$1$2');
 }
 
-/** Pick the best artwork URL from yt-dlp's single thumbnail or thumbnails list. */
-function pickArtwork(info: YtDlpInfo): string | undefined {
-  const single = clean(info.thumbnail);
-  if (single) return upscaleArtwork(single);
+interface PickedArtwork {
+  url: string;
+  /** Square ≈ a real album cover; non-square ≈ a 16:9 video thumbnail. */
+  square: boolean;
+}
 
-  const list = Array.isArray(info.thumbnails) ? info.thumbnails : [];
-  const best = list
-    .filter((t) => t && typeof t.url === 'string' && t.url.trim())
-    .sort((a, b) => (b.width ?? b.preference ?? 0) - (a.width ?? a.preference ?? 0))[0];
-  return best?.url ? upscaleArtwork(best.url.trim()) : undefined;
+/** True/false when both dimensions are known, undefined when they are not. */
+function isSquareDims(w?: number, h?: number): boolean | undefined {
+  if (!w || !h) return undefined;
+  return Math.abs(w - h) / Math.max(w, h) <= 0.1;
+}
+
+/**
+ * Pick the best artwork from yt-dlp's thumbnails and flag whether it is a true
+ * (square) cover. SoundCloud/YouTube-Music art is square; a plain YouTube video
+ * only offers a 16:9 frame, which callers can choose to skip in favour of a
+ * provider's real cover.
+ */
+function pickArtwork(info: YtDlpInfo): PickedArtwork | undefined {
+  const list = (Array.isArray(info.thumbnails) ? info.thumbnails : [])
+    .filter((t): t is YtDlpThumbnail & { url: string } => !!t && typeof t.url === 'string' && !!t.url.trim());
+
+  // Prefer the largest clearly-square thumbnail — that's a real cover.
+  const square = list
+    .filter((t) => isSquareDims(t.width, t.height) === true)
+    .sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0];
+  if (square) return { url: upscaleArtwork(square.url.trim()), square: true };
+
+  // SoundCloud artwork URLs are square even when the JSON omits dimensions.
+  const scUrl = clean(info.thumbnail) && /sndcdn\.com\/artworks/i.test(info.thumbnail!)
+    ? info.thumbnail!.trim()
+    : list.find((t) => /sndcdn\.com\/artworks/i.test(t.url))?.url.trim();
+  if (scUrl) return { url: upscaleArtwork(scUrl), square: true };
+
+  // Fall back to yt-dlp's chosen thumbnail (usually a 16:9 video frame).
+  const single = clean(info.thumbnail);
+  if (single) {
+    const dims = list.find((t) => t.url === info.thumbnail);
+    return { url: upscaleArtwork(single), square: isSquareDims(dims?.width, dims?.height) === true };
+  }
+  const best = list.slice().sort((a, b) => (b.width ?? b.preference ?? 0) - (a.width ?? a.preference ?? 0))[0];
+  return best ? { url: upscaleArtwork(best.url.trim()), square: isSquareDims(best.width, best.height) === true } : undefined;
 }
 
 function hintsFromInfo(info: YtDlpInfo): YouTubeMetadataHints {
   const year = clean(info.release_year) ?? clean(info.upload_date)?.slice(0, 4);
+  const art = pickArtwork(info);
   return {
     title: clean(info.track) ?? clean(info.title),
     // Provider-search artist stays artist/creator only (uploader is often a
@@ -71,7 +106,8 @@ function hintsFromInfo(info: YtDlpInfo): YouTubeMetadataHints {
     album: clean(info.album),
     uploader: clean(info.uploader),
     year,
-    artworkUrl: pickArtwork(info),
+    artworkUrl: art?.url,
+    artworkIsSquare: art?.square ?? false,
   };
 }
 

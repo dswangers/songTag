@@ -136,6 +136,10 @@ downloadBtn.addEventListener('click', () => {
   const playlist = $('#playlist').checked;
   const overwrite = false;
   const sourceMeta = $('#source-meta').checked;
+  const autoTag = $('#auto-tag').checked;
+  // Keep yt-dlp's .info.json whenever we'll auto-tag, so the tagger can use the
+  // source's real artist/album (for the search, or directly in source mode).
+  const infoJson = autoTag || sourceMeta;
   const quality = $('#quality').value;
   const log = $('#download-log');
   const bar = $('#download-bar');
@@ -147,7 +151,7 @@ downloadBtn.addEventListener('click', () => {
   downloadBtn.disabled = true;
   downloadBtn.textContent = 'Downloading…';
 
-  const qs = new URLSearchParams({ url, playlist: String(playlist), quality, overwrite: String(overwrite), sourceMeta: String(sourceMeta) });
+  const qs = new URLSearchParams({ url, playlist: String(playlist), quality, overwrite: String(overwrite), infoJson: String(infoJson) });
   let es;
   const downloaded = []; // filenames saved this run, for auto-tagging
 

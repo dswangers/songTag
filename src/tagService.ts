@@ -232,11 +232,18 @@ async function processFileFromSource(
       log(`provider enrichment skipped: ${lookupErr instanceof Error ? lookupErr.message : String(lookupErr)}`);
     }
 
+    // Use the source artwork only when it is a real (square) cover — e.g.
+    // SoundCloud or YouTube Music. A plain YouTube video only offers a 16:9
+    // thumbnail, so prefer the provider's real album cover there.
+    const albumArtUrl = hints?.artworkIsSquare && hints.artworkUrl
+      ? hints.artworkUrl
+      : provider?.albumArtUrl ?? hints?.artworkUrl;
+
     const metadata: TrackMetadata = {
-      // Source owns the track identity and its real artwork…
+      // Source owns the track identity…
       title,
       artist: sourceArtist || provider?.artist || '',
-      albumArtUrl: hints?.artworkUrl ?? provider?.albumArtUrl,
+      albumArtUrl,
       // …provider fills in the structured bits the source usually lacks.
       album: sourceAlbum || provider?.album || '',
       year: hints?.year ?? provider?.year,
@@ -321,11 +328,13 @@ export async function tagFiles(
         index: idx,
         total: files.length,
       });
-      if (options.useSourceMetadata) {
-        // Always clear the sidecar afterwards so it doesn't linger in the folder.
-        return processFileFromSource(file, onEvent).finally(() => deleteInfoSidecar(file));
-      }
-      return processFile(file, onEvent);
+      // processFile also reads the .info.json sidecar (via buildQuery) to get
+      // the source's artist/album as search hints; source mode uses it directly.
+      const task = options.useSourceMetadata
+        ? processFileFromSource(file, onEvent)
+        : processFile(file, onEvent);
+      // Clear the sidecar afterwards so it doesn't linger in the folder.
+      return task.finally(() => deleteInfoSidecar(file));
     },
     signal
   );
