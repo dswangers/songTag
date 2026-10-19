@@ -121,7 +121,7 @@ export async function searchTracksAsUser(
  */
 export async function searchAlbumsAsUser(
   q: string,
-  limit = 12
+  limit = 10
 ): Promise<SpotifyApi.AlbumObjectSimplified[] | null> {
   if (!refreshToken) return null;
   const client = await ensureAccess();

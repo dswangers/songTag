@@ -22,6 +22,7 @@ async function loadHeader() {
     const cfg = await (await fetch('/api/config')).json();
     $('#meta-folder').textContent = `Folder: ${cfg.folder}`;
     $('#meta-provider').textContent = `Provider: ${cfg.provider}`;
+    applyProviderDefault(cfg.provider);
   } catch { /* ignore */ }
 
   try {
@@ -41,6 +42,20 @@ async function loadHeader() {
     $('#meta-health').textContent = 'Could not check dependencies';
     $('#meta-health').className = 'health bad';
   }
+}
+
+/**
+ * Default the Songs/Albums source pickers to match the configured API provider:
+ * Spotify when API_PROVIDER=spotify, otherwise Discogs.
+ */
+function applyProviderDefault(provider) {
+  const src = provider === 'spotify' ? 'spotify' : 'discogs';
+  const albumSel = $('#album-source');
+  const songSel = $('#song-source');
+  if (albumSel) albumSel.value = src;
+  if (songSel) songSel.value = src;
+  albumChosenSource = src;
+  songSearch.source = src;
 }
 
 // ─── Generic SSE helper ─────────────────────────────────────────────────────
@@ -892,6 +907,7 @@ async function loadRetagFiles() {
     const { files } = await (await fetch('/api/files')).json();
     retagAll = files.map((f) => (typeof f === 'string' ? { name: f } : f));
     renderRetag();
+    populateManualFiles();
   } catch {
     $('#retag-count').textContent = 'Error loading files';
   }
@@ -1035,6 +1051,103 @@ retagBtn.addEventListener('click', async () => {
         break;
     }
   }, finish, controller.signal);
+});
+
+// ─── Manual tag (inside Retag tab) ──────────────────────────────────────────
+let manualCoverDataUrl = ''; // base64 data URL of the uploaded cover, if any
+
+function populateManualFiles() {
+  const sel = $('#mt-file');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = '';
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = retagAll.length ? 'Select a file…' : 'No files found';
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  sel.appendChild(placeholder);
+
+  retagAll.forEach((f) => {
+    const o = document.createElement('option');
+    o.value = f.name;
+    o.textContent = f.name;
+    sel.appendChild(o);
+  });
+  if (prev && retagAll.some((f) => f.name === prev)) sel.value = prev;
+}
+
+function prefillManualFromFile(name) {
+  const f = retagAll.find((x) => x.name === name);
+  $('#mt-title').value = (f && f.title) || '';
+  $('#mt-artist').value = (f && f.artist) || '';
+  $('#mt-album').value = (f && f.album) || '';
+  $('#mt-year').value = (f && f.year) || '';
+  $('#mt-track').value = (f && f.trackNumber) || '';
+  $('#mt-status').textContent = '';
+}
+
+$('#mt-file').addEventListener('change', (e) => prefillManualFromFile(e.target.value));
+
+$('#mt-cover').addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  const img = $('#mt-cover-img');
+  if (!file) { manualCoverDataUrl = ''; img.classList.add('hidden'); img.removeAttribute('src'); return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    manualCoverDataUrl = String(reader.result || '');
+    img.src = manualCoverDataUrl;
+    img.classList.remove('hidden');
+  };
+  reader.readAsDataURL(file);
+});
+
+$('#mt-apply').addEventListener('click', async () => {
+  const file = $('#mt-file').value;
+  const status = $('#mt-status');
+  if (!file) { status.textContent = 'Pick a file first'; status.className = 'count line-warn'; return; }
+
+  const payload = {
+    file,
+    title: $('#mt-title').value.trim(),
+    artist: $('#mt-artist').value.trim(),
+    album: $('#mt-album').value.trim(),
+    year: $('#mt-year').value.trim(),
+    trackNumber: $('#mt-track').value.trim(),
+    cover: manualCoverDataUrl || undefined,
+  };
+  if (!payload.title && !payload.artist && !payload.album && !payload.year && !payload.trackNumber && !payload.cover) {
+    status.textContent = 'Fill in a field or add a cover'; status.className = 'count line-warn'; return;
+  }
+
+  const btn = $('#mt-apply');
+  btn.disabled = true; btn.textContent = 'Applying…';
+  status.textContent = ''; status.className = 'count';
+  try {
+    const resp = await fetch('/api/manual-tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || 'Failed to write tags');
+    status.textContent = `✓ Tagged${data.coverUpdated ? ' + cover' : ''}`;
+    status.className = 'count line-ok';
+    // Reset the cover picker and refresh the list so the row shows new tags.
+    manualCoverDataUrl = '';
+    $('#mt-cover').value = '';
+    const img = $('#mt-cover-img'); img.classList.add('hidden'); img.removeAttribute('src');
+    await loadRetagFiles();
+    $('#mt-file').value = file;
+    prefillManualFromFile(file);
+    $('#mt-status').textContent = `✓ Tagged${data.coverUpdated ? ' + cover' : ''}`;
+    $('#mt-status').className = 'count line-ok';
+  } catch (err) {
+    status.textContent = `✗ ${err instanceof Error ? err.message : err}`;
+    status.className = 'count line-error';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Apply tags';
+  }
 });
 
 // ─── Review tab (low-confidence tags) ───────────────────────────────────────

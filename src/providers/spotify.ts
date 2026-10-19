@@ -231,7 +231,7 @@ export async function searchSpotifyCandidates(
  * Search Spotify for albums (for the Albums tab). Prefers the user's OAuth token
  * when connected, falling back to Client Credentials otherwise.
  */
-export async function searchSpotifyAlbums(q: string, limit = 12): Promise<AlbumResult[]> {
+export async function searchSpotifyAlbums(q: string, limit = 10): Promise<AlbumResult[]> {
   await ensureToken();
   const client = getClient();
 

@@ -258,6 +258,48 @@
       Searches from the <b>filename</b> (or your edited text), ignoring current tags —
       so wrong tags get corrected. Edit a row's text to fix the search.
     </p>
+
+    <details id="manual-tag" class="manual-tag">
+      <summary>✍️ Manual tag — type the details in yourself</summary>
+      <div class="manual-grid">
+        <label class="mt-field mt-wide">
+          <span>File</span>
+          <select id="mt-file"></select>
+        </label>
+        <label class="mt-field">
+          <span>Title</span>
+          <input id="mt-title" type="text" autocomplete="off" />
+        </label>
+        <label class="mt-field">
+          <span>Artist</span>
+          <input id="mt-artist" type="text" autocomplete="off" />
+        </label>
+        <label class="mt-field">
+          <span>Album</span>
+          <input id="mt-album" type="text" autocomplete="off" />
+        </label>
+        <label class="mt-field mt-narrow">
+          <span>Year</span>
+          <input id="mt-year" type="text" inputmode="numeric" autocomplete="off" />
+        </label>
+        <label class="mt-field mt-narrow">
+          <span>Track #</span>
+          <input id="mt-track" type="text" inputmode="numeric" autocomplete="off" />
+        </label>
+        <label class="mt-field">
+          <span>Album cover</span>
+          <input id="mt-cover" type="file" accept="image/*" />
+        </label>
+        <div class="mt-coverprev">
+          <img id="mt-cover-img" alt="" class="hidden" />
+        </div>
+        <div class="mt-actions">
+          <button id="mt-apply" class="primary">Apply tags</button>
+          <span id="mt-status" class="count"></span>
+        </div>
+      </div>
+    </details>
+
     <div id="retag-progress" class="progressbar hidden"><div id="retag-bar" class="fill"></div></div>
 
     <div class="tag-layout">

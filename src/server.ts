@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import { config } from './config';
 import { scanMp3Files } from './scanner';
 import { tagFiles, retagFiles, getRetagCandidates } from './tagService';
-import { isFullyTagged, readExistingTags } from './tagger';
+import { isFullyTagged, readExistingTags, applyManualTags } from './tagger';
 import { downloadAudio, checkDependencies } from './downloadService';
 import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertSong } from './convertService';
 import { searchSpotifyAlbums, searchSpotifyTracks } from './providers/spotify';
@@ -21,7 +21,17 @@ import {
 const app = express();
 const PORT = parseInt(process.env.PORT ?? '4000', 10);
 
-app.use(express.json());
+/**
+ * Default search source for the Songs/Albums tabs, driven by API_PROVIDER.
+ * Spotify when the provider is Spotify, otherwise Discogs (there is no
+ * MusicBrainz song/album picker, so Discogs is the sensible fallback).
+ */
+const defaultSource: 'spotify' | 'discogs' =
+  config.provider === 'spotify' ? 'spotify' : 'discogs';
+
+// Album covers are sent as base64 data URLs for manual tagging, so raise the
+// JSON body limit well above the 100kb default.
+app.use(express.json({ limit: '20mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
 app.use((req, _res, next) => {
@@ -156,6 +166,71 @@ app.post('/api/retag/candidates', async (req: Request, res: Response) => {
 
   try {
     res.json({ candidates: await getRetagCandidates(query) });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/**
+ * Decode a data URL (or bare base64 string) into an image buffer.
+ * Returns null for empty/invalid input.
+ */
+function decodeCover(value: unknown): Buffer | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const match = value.match(/^data:[^;]+;base64,(.*)$/s);
+  const base64 = match ? match[1] : value;
+  try {
+    const buf = Buffer.from(base64, 'base64');
+    return buf.length > 0 ? buf : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write hand-typed tags (and an optional uploaded cover) onto one file. */
+app.post('/api/manual-tag', async (req: Request, res: Response) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const rawFile = typeof body.file === 'string' ? body.file.trim() : '';
+  if (!rawFile) {
+    res.status(400).json({ error: 'No file selected.' });
+    return;
+  }
+
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const fields = {
+    title: str(body.title) || undefined,
+    artist: str(body.artist) || undefined,
+    album: str(body.album) || undefined,
+    year: str(body.year) || undefined,
+    trackNumber: str(body.trackNumber) || undefined,
+  };
+  const imageBuffer = decodeCover(body.cover);
+
+  if (!fields.title && !fields.artist && !fields.album && !fields.year && !fields.trackNumber && !imageBuffer) {
+    res.status(400).json({ error: 'Nothing to write — fill in a field or add a cover.' });
+    return;
+  }
+
+  // basename guards against path traversal from the client.
+  const filePath = path.join(config.mp3Folder, path.basename(rawFile));
+  if (!filePath.toLowerCase().endsWith('.mp3') || !fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'File not found.' });
+    return;
+  }
+
+  try {
+    applyManualTags(filePath, fields, imageBuffer);
+    const t = readExistingTags(filePath);
+    res.json({
+      ok: true,
+      tags: {
+        title: t.title ?? '',
+        artist: t.artist ?? '',
+        album: t.album ?? '',
+        trackNumber: t.trackNumber ?? '',
+      },
+      coverUpdated: !!imageBuffer,
+    });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
@@ -397,7 +472,7 @@ app.get('/api/discogs/search-albums', async (req: Request, res: Response) => {
 /** Search for individual tracks (for the Songs tab), from either source. */
 app.get('/api/songs/search', async (req: Request, res: Response) => {
   const q = String(req.query.q ?? '').trim();
-  const source = String(req.query.source ?? 'discogs') === 'spotify' ? 'spotify' : 'discogs';
+  const source = String(req.query.source ?? defaultSource) === 'spotify' ? 'spotify' : 'discogs';
   const offset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
   if (!q) {
     res.status(400).json({ error: 'No search query provided.' });
@@ -451,7 +526,7 @@ app.get('/api/convert-song', async (req: Request, res: Response) => {
 /** Album tracklist preview (name + tracks) for the Albums tab, from either source. */
 app.get('/api/album-tracks', async (req: Request, res: Response) => {
   const album = String(req.query.album ?? '').trim();
-  const source = String(req.query.source ?? 'spotify') === 'discogs' ? 'discogs' : 'spotify';
+  const source = String(req.query.source ?? defaultSource) === 'discogs' ? 'discogs' : 'spotify';
   if (!album) {
     res.status(400).json({ error: 'No album provided.' });
     return;
@@ -474,7 +549,7 @@ app.get('/api/album-tracks', async (req: Request, res: Response) => {
 app.get('/api/convert-album', async (req: Request, res: Response) => {
   const album = String(req.query.album ?? '').trim();
   const quality = String(req.query.quality ?? '0');
-  const source = String(req.query.source ?? 'spotify') === 'discogs' ? 'discogs' : 'spotify';
+  const source = String(req.query.source ?? defaultSource) === 'discogs' ? 'discogs' : 'spotify';
   const send = openSse(res);
 
   if (!album) {

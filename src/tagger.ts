@@ -140,6 +140,48 @@ export function updateAlbumArt(filePath: string, imageBuffer: Buffer): boolean {
 }
 
 /**
+ * Apply hand-typed tags from the manual tagger. Merges the given text fields
+ * (leaving anything not provided untouched) and, when a cover image is given,
+ * replaces the embedded album art. When no cover is provided, any existing art
+ * is preserved. Returns true on success.
+ */
+export function applyManualTags(
+  filePath: string,
+  fields: {
+    title?: string;
+    artist?: string;
+    album?: string;
+    year?: string;
+    trackNumber?: string;
+  },
+  imageBuffer: Buffer | null,
+): boolean {
+  const tags: NodeID3.Tags = {};
+  if (fields.title) tags.title = fields.title;
+  if (fields.artist) {
+    tags.artist = fields.artist; // keep "Main, Feature" for track-level display
+    const primaryArtist = fields.artist.split(",")[0]?.trim() || fields.artist;
+    tags.performerInfo = primaryArtist; // acts as the Album Artist to unify the folder
+  }
+  if (fields.album) tags.album = fields.album;
+  if (fields.year) tags.year = fields.year;
+  if (fields.trackNumber) tags.trackNumber = fields.trackNumber;
+
+  if (imageBuffer) {
+    tags.image = {
+      mime: mimeFromBuffer(imageBuffer),
+      type: { id: 3, name: "front cover" },
+      description: "Cover",
+      imageBuffer,
+    };
+  }
+
+  const result = NodeID3.update(tags, filePath);
+  if (result === true) return true;
+  throw result instanceof Error ? result : new Error(String(result));
+}
+
+/**
  * Merge-update only the given text fields, leaving everything else (notably any
  * existing embedded cover art) untouched. Used when we have authoritative
  * title/artist but no replacement album art.

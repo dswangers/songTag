@@ -440,3 +440,56 @@ button#retag-clear {
 .retag-row.error { border-color: rgba(255,92,92,0.5); }
 .retag-row.nomatch { border-color: rgba(255,182,72,0.45); }
 .retag-row.working { border-color: var(--accent); }
+
+/* ─── Manual tag panel (Retag tab) ─────────────────────────────────────────── */
+.manual-tag {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 0 0 16px;
+  padding: 0;
+}
+.manual-tag > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13.5px;
+  color: var(--text);
+  user-select: none;
+}
+.manual-tag[open] > summary { border-bottom: 1px solid var(--border); }
+.manual-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 14px;
+}
+.mt-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.mt-field > span { color: var(--muted); font-size: 12px; }
+.mt-field.mt-wide { grid-column: 1 / -1; }
+.mt-field.mt-narrow { }
+.manual-grid input[type="text"],
+.manual-grid select {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13.5px;
+}
+.manual-grid input[type="file"] { color: var(--muted); font-size: 12.5px; }
+.mt-coverprev { display: flex; align-items: center; justify-content: flex-start; }
+.mt-coverprev img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.mt-coverprev img.hidden { display: none; }
+.mt-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
