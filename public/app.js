@@ -135,6 +135,7 @@ downloadBtn.addEventListener('click', () => {
 
   const playlist = $('#playlist').checked;
   const overwrite = false;
+  const sourceMeta = $('#source-meta').checked;
   const quality = $('#quality').value;
   const log = $('#download-log');
   const bar = $('#download-bar');
@@ -146,7 +147,7 @@ downloadBtn.addEventListener('click', () => {
   downloadBtn.disabled = true;
   downloadBtn.textContent = 'Downloading…';
 
-  const qs = new URLSearchParams({ url, playlist: String(playlist), quality, overwrite: String(overwrite) });
+  const qs = new URLSearchParams({ url, playlist: String(playlist), quality, overwrite: String(overwrite), sourceMeta: String(sourceMeta) });
   let es;
   const downloaded = []; // filenames saved this run, for auto-tagging
 
@@ -207,7 +208,7 @@ function autoTagDownloaded(files, log, bar, done) {
   bar.style.width = '0%';
   downloadBtn.textContent = 'Tagging…';
   let total = files.length, processed = 0;
-  const qs = new URLSearchParams({ files: files.join('\n') });
+  const qs = new URLSearchParams({ files: files.join('\n'), sourceMeta: String($('#source-meta').checked) });
   const es = streamSse(`/api/tag-files?${qs.toString()}`, (ev) => {
     switch (ev.type) {
       case 'start':

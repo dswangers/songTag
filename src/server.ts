@@ -281,6 +281,8 @@ app.get('/api/download', async (req: Request, res: Response) => {
   const playlist = String(req.query.playlist ?? 'false') === 'true';
   const audioQuality = String(req.query.quality ?? '0');
   const overwrite = String(req.query.overwrite ?? 'false') === 'true';
+  // When tagging from source metadata, keep yt-dlp's .info.json sidecar.
+  const sourceMeta = String(req.query.sourceMeta ?? 'false') === 'true';
 
   const send = openSse(res);
 
@@ -293,7 +295,7 @@ app.get('/api/download', async (req: Request, res: Response) => {
   const job = beginJob(req);
   try {
     await downloadAudio(
-      { url, folder: config.mp3Folder, playlist, audioQuality, overwrite },
+      { url, folder: config.mp3Folder, playlist, audioQuality, overwrite, writeInfoJson: sourceMeta },
       send,
       job.signal
     );
@@ -318,6 +320,7 @@ app.get('/api/tag-files', async (req: Request, res: Response) => {
     const raw = String(req.query.files ?? '').trim();
     const names = raw ? raw.split('\n').map((s) => s.trim()).filter(Boolean) : [];
     const includeTagged = String(req.query.all ?? 'false') === 'true';
+    const useSourceMetadata = String(req.query.sourceMeta ?? 'false') === 'true';
 
     // basename guards against path traversal; keep only existing .mp3 files.
     let files = names
@@ -334,7 +337,7 @@ app.get('/api/tag-files', async (req: Request, res: Response) => {
 
     await tagFiles(
       files,
-      { concurrency: config.concurrency, requestDelayMs: config.requestDelayMs },
+      { concurrency: config.concurrency, requestDelayMs: config.requestDelayMs, useSourceMetadata },
       send,
       job.signal
     );

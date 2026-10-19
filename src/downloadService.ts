@@ -41,6 +41,8 @@ export interface DownloadOptions {
   audioQuality?: string;
   /** Re-download and replace files that already exist. */
   overwrite?: boolean;
+  /** Write a `.info.json` sidecar so the source's own metadata can be used for tagging. */
+  writeInfoJson?: boolean;
 }
 
 /** Matches "[download]  42.3% of ..." progress lines from yt-dlp --newline. */
@@ -155,17 +157,20 @@ export function downloadAudio(
   onEvent: DownloadEventHandler,
   signal?: AbortSignal
 ): Promise<number> {
-  const { url, folder, playlist, audioQuality = '0', overwrite = false } = options;
+  const { url, folder, playlist, audioQuality = '0', overwrite = false, writeInfoJson = false } = options;
 
   const args = [
     '-x',
     '--audio-format', 'mp3',
     '--audio-quality', audioQuality,
     '--no-mtime',
-    '--ignore-errors',          
+    '--ignore-errors',
     overwrite ? '--force-overwrites' : '--no-overwrites',
-    '--newline',                
+    '--newline',
     playlist ? '--yes-playlist' : '--no-playlist',
+    // Keep the source's own metadata (title/artist/artwork) alongside each file
+    // so "source metadata" tagging can read it without a second network fetch.
+    ...(writeInfoJson ? ['--write-info-json'] : []),
     '-o', path.join(folder, '%(title)s [%(id)s].%(ext)s'), // ⬅️ UPDATED
     url,
   ];

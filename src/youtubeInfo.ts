@@ -10,6 +10,19 @@ export interface YouTubeMetadataHints {
   title?: string;
   artist?: string;
   album?: string;
+  /** Uploader/channel name — a fallback artist for sources like SoundCloud. */
+  uploader?: string;
+  /** Release year, from release_year or the upload date. */
+  year?: string;
+  /** Best available cover/thumbnail URL (e.g. SoundCloud track artwork). */
+  artworkUrl?: string;
+}
+
+interface YtDlpThumbnail {
+  url?: string;
+  width?: number;
+  height?: number;
+  preference?: number;
 }
 
 interface YtDlpInfo {
@@ -20,18 +33,50 @@ interface YtDlpInfo {
   uploader?: string;
   album?: string;
   description?: string;
+  release_year?: number | string;
+  upload_date?: string;
+  thumbnail?: string;
+  thumbnails?: YtDlpThumbnail[];
 }
 
 function clean(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+/** SoundCloud serves small "-large" (100px) art; request the 500px variant. */
+function upscaleArtwork(url: string): string {
+  return url.replace(/-large(\.(?:jpg|jpeg|png|gif))(\?.*)?$/i, '-t500x500$1$2');
+}
+
+/** Pick the best artwork URL from yt-dlp's single thumbnail or thumbnails list. */
+function pickArtwork(info: YtDlpInfo): string | undefined {
+  const single = clean(info.thumbnail);
+  if (single) return upscaleArtwork(single);
+
+  const list = Array.isArray(info.thumbnails) ? info.thumbnails : [];
+  const best = list
+    .filter((t) => t && typeof t.url === 'string' && t.url.trim())
+    .sort((a, b) => (b.width ?? b.preference ?? 0) - (a.width ?? a.preference ?? 0))[0];
+  return best?.url ? upscaleArtwork(best.url.trim()) : undefined;
+}
+
 function hintsFromInfo(info: YtDlpInfo): YouTubeMetadataHints {
+  const year = clean(info.release_year) ?? clean(info.upload_date)?.slice(0, 4);
   return {
     title: clean(info.track) ?? clean(info.title),
+    // Provider-search artist stays artist/creator only (uploader is often a
+    // label/channel); uploader is exposed separately for source-metadata mode.
     artist: clean(info.artist) ?? clean(info.creator),
     album: clean(info.album),
+    uploader: clean(info.uploader),
+    year,
+    artworkUrl: pickArtwork(info),
   };
+}
+
+function hasAnyHint(h: YouTubeMetadataHints): boolean {
+  return !!(h.title || h.artist || h.album || h.uploader || h.artworkUrl);
 }
 
 function sidecarPathFor(filePath: string): string {
@@ -46,8 +91,8 @@ function readSidecar(filePath: string, log: Logger): YouTubeMetadataHints | unde
   try {
     const info = JSON.parse(fs.readFileSync(sidecarPath, 'utf8')) as YtDlpInfo;
     const hints = hintsFromInfo(info);
-    if (hints.title || hints.artist || hints.album) {
-      log(`youtube info sidecar ->${hints.artist ? ` artist="${hints.artist}"` : ''}${hints.title ? ` title="${hints.title}"` : ''}${hints.album ? ` album="${hints.album}"` : ''}`);
+    if (hasAnyHint(hints)) {
+      log(`source info sidecar ->${hints.artist ? ` artist="${hints.artist}"` : ''}${hints.uploader ? ` uploader="${hints.uploader}"` : ''}${hints.title ? ` title="${hints.title}"` : ''}${hints.album ? ` album="${hints.album}"` : ''}${hints.artworkUrl ? ' +artwork' : ''}`);
       return hints;
     }
   } catch (err) {
@@ -66,8 +111,8 @@ async function fetchInfo(url: string, log: Logger): Promise<YouTubeMetadataHints
     );
     const info = JSON.parse(stdout) as YtDlpInfo;
     const hints = hintsFromInfo(info);
-    if (hints.title || hints.artist || hints.album) {
-      log(`youtube info url ->${hints.artist ? ` artist="${hints.artist}"` : ''}${hints.title ? ` title="${hints.title}"` : ''}${hints.album ? ` album="${hints.album}"` : ''}`);
+    if (hasAnyHint(hints)) {
+      log(`source info url ->${hints.artist ? ` artist="${hints.artist}"` : ''}${hints.uploader ? ` uploader="${hints.uploader}"` : ''}${hints.title ? ` title="${hints.title}"` : ''}${hints.album ? ` album="${hints.album}"` : ''}${hints.artworkUrl ? ' +artwork' : ''}`);
       return hints;
     }
   } catch (err) {
@@ -83,4 +128,14 @@ export async function readYouTubeMetadataHints(
   log: Logger
 ): Promise<YouTubeMetadataHints | undefined> {
   return readSidecar(filePath, log) ?? (sourceUrl ? await fetchInfo(sourceUrl, log) : undefined);
+}
+
+/** Remove the `.info.json` sidecar yt-dlp wrote for a file, if present. */
+export function deleteInfoSidecar(filePath: string): void {
+  try {
+    const sidecarPath = sidecarPathFor(filePath);
+    if (fs.existsSync(sidecarPath)) fs.unlinkSync(sidecarPath);
+  } catch {
+    /* best effort — a leftover sidecar is harmless */
+  }
 }

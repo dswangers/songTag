@@ -2,7 +2,7 @@ import * as path from 'path';
 import { parseFilename } from './parser';
 import { fetchMetadata, downloadImage } from './fetcher';
 import { writeId3Tags, readExistingTags } from './tagger';
-import { readYouTubeMetadataHints } from './youtubeInfo';
+import { readYouTubeMetadataHints, deleteInfoSidecar } from './youtubeInfo';
 import { searchSpotifyCandidates } from './providers/spotify';
 import { searchDiscogsCandidates } from './providers/discogs';
 import { config } from './config';
@@ -192,6 +192,76 @@ async function processFile(
 }
 
 /**
+ * Tag a file from the source's OWN metadata (SoundCloud/YouTube via yt-dlp),
+ * read from the `.info.json` sidecar written at download time. The source stays
+ * authoritative for title, artist (uploader as fallback) and cover artwork, but
+ * the source's artist + album are ALSO fed into a provider lookup to enrich the
+ * tags with a canonical album, year and track number when one is found — so the
+ * file ends up with more data than the source alone provides. Falls back to the
+ * normal filename-based provider lookup when no usable source metadata exists.
+ */
+async function processFileFromSource(
+  filePath: string,
+  onEvent: TagEventHandler
+): Promise<TagResult> {
+  const filename = path.basename(filePath);
+  const log = (message: string) => onEvent({ type: 'debug', filename, message });
+  log(`raw filename: ${filename}`);
+
+  try {
+    const existing = readExistingTags(filePath);
+    const hints = await readYouTubeMetadataHints(filePath, existing.sourceUrl, log);
+    const title = hints?.title;
+    const artist = hints?.artist ?? hints?.uploader;
+
+    if (!title) {
+      log('no source metadata found — falling back to provider lookup');
+      return tagWithParsed(filePath, await buildQuery(filePath, log), onEvent);
+    }
+
+    const sourceArtist = artist ? cleanArtist(artist) : '';
+    const sourceAlbum = hints?.album ?? '';
+
+    // Seed the provider with the source's artist + album so it has more to match
+    // on. Any result enriches (but does not replace) the source identity.
+    let provider: TrackMetadata | null = null;
+    try {
+      const parsed = makeParsed(sourceArtist || undefined, title, sourceAlbum || undefined);
+      provider = await fetchMetadata(parsed, log);
+    } catch (lookupErr) {
+      log(`provider enrichment skipped: ${lookupErr instanceof Error ? lookupErr.message : String(lookupErr)}`);
+    }
+
+    const metadata: TrackMetadata = {
+      // Source owns the track identity and its real artwork…
+      title,
+      artist: sourceArtist || provider?.artist || '',
+      albumArtUrl: hints?.artworkUrl ?? provider?.albumArtUrl,
+      // …provider fills in the structured bits the source usually lacks.
+      album: sourceAlbum || provider?.album || '',
+      year: hints?.year ?? provider?.year,
+      trackNumber: provider?.trackNumber,
+      confidence: provider?.confidence ?? 100,
+    };
+
+    log(
+      `using source metadata${provider ? ' + provider enrichment' : ''} -> ` +
+      `artist="${metadata.artist}" title="${metadata.title}"` +
+      `${metadata.album ? ` album="${metadata.album}"` : ''}` +
+      `${metadata.trackNumber ? ` track#=${metadata.trackNumber}` : ''}` +
+      `${metadata.albumArtUrl ? ' +artwork' : ''}`
+    );
+    return tagWithMetadata(filePath, metadata, onEvent, log);
+  } catch (err: unknown) {
+    const error = err instanceof Error
+      ? err.message
+      : (err && typeof err === 'object' ? JSON.stringify(err) : String(err));
+    onEvent({ type: 'error', filename, error });
+    return { filePath, filename, success: false, error };
+  }
+}
+
+/**
  * Run `items` through `fn` concurrently up to `limit` at a time, staggering
  * starts by `delayMs` to respect API rate limits.
  */
@@ -234,7 +304,7 @@ async function concurrentMap<T>(
  */
 export async function tagFiles(
   files: string[],
-  options: { concurrency: number; requestDelayMs: number },
+  options: { concurrency: number; requestDelayMs: number; useSourceMetadata?: boolean },
   onEvent: TagEventHandler,
   signal?: AbortSignal
 ): Promise<TagResult[]> {
@@ -251,6 +321,10 @@ export async function tagFiles(
         index: idx,
         total: files.length,
       });
+      if (options.useSourceMetadata) {
+        // Always clear the sidecar afterwards so it doesn't linger in the folder.
+        return processFileFromSource(file, onEvent).finally(() => deleteInfoSidecar(file));
+      }
       return processFile(file, onEvent);
     },
     signal
