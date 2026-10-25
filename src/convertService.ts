@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { config } from './config';
-import { parsePlaylistId } from './spotifyAuth';
+import { parsePlaylistId, isAuthenticated, getPlaylistItemsDated } from './spotifyAuth';
 import { fetchPlaylistViaEmbed, fetchAlbumViaEmbed, type EmbedTrack } from './spotifyEmbed';
 import { fetchDiscogsAlbumTracks } from './providers/discogs';
 import { findYouTubeCandidates } from './youtubeMatch';
@@ -272,8 +272,27 @@ export async function convertPlaylist(
   if (!id) throw new Error('Could not parse a Spotify playlist ID from that input.');
 
   fs.mkdirSync(folder, { recursive: true });
+  const log = (m: string) => onEvent({ type: 'debug', track: 'playlist', message: m });
 
-  const { name, tracks } = await fetchPlaylistViaEmbed(id, (m) => onEvent({ type: 'debug', track: 'playlist', message: m }));
+  // Preferred: the user's own Spotify login reads the FULL playlist (no 100 cap)
+  // — works for playlists they own or collaborate on.
+  if (isAuthenticated()) {
+    try {
+      const items = await getPlaylistItemsDated(id);
+      if (items.length > 0) {
+        log(`  read all ${items.length} tracks via your Spotify account`);
+        // The embed is only needed for the name here; don't let it block the run.
+        const name = await fetchPlaylistViaEmbed(id, log, false).then((e) => e.name, () => 'Playlist');
+        const tracks: EmbedTrack[] = items.map((t) => ({ title: t.title, artist: t.artist, durationMs: t.durationMs, uri: '' }));
+        await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
+        return;
+      }
+    } catch (err) {
+      log(`  couldn't read the playlist via your account (${err instanceof Error ? err.message : err}) — using the public embed`);
+    }
+  }
+
+  const { name, tracks } = await fetchPlaylistViaEmbed(id, log);
   await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
 }
 
