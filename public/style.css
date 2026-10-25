@@ -349,7 +349,17 @@ button#retag-clear {
   flex-direction: column;
   gap: 3px;
 }
-.album-tracklist li { font-size: 13.5px; color: var(--text); }
+.album-tracklist li {
+  font-size: 13.5px;
+  color: var(--text);
+  padding: 2px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+.album-tracklist li:hover { background: var(--panel-2); }
+.album-tracklist li.picked { background: rgba(29, 185, 84, 0.18); color: var(--accent-hover); }
+.album-tracklist li.picked::marker { color: var(--accent); }
 .album-tracklist li::marker { color: var(--muted); font-size: 12px; }
 .album-tracklist .trk-title { }
 .album-tracklist .trk-dur { color: var(--muted); font-size: 12px; margin-left: 8px; }

@@ -6,7 +6,7 @@ import { scanMp3Files } from './scanner';
 import { tagFiles, retagFiles, getRetagCandidates } from './tagService';
 import { isFullyTagged, readExistingTags, applyManualTags } from './tagger';
 import { downloadAudio, checkDependencies } from './downloadService';
-import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertSong } from './convertService';
+import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertSong, type AlbumTrackPick } from './convertService';
 import { searchSpotifyAlbums, searchSpotifyTracks } from './providers/spotify';
 import { searchDiscogsAlbums, fetchDiscogsAlbumTracks, searchDiscogsSongs } from './providers/discogs';
 import { fetchAlbumViaEmbed } from './spotifyEmbed';
@@ -549,7 +549,7 @@ app.get('/api/album-tracks', async (req: Request, res: Response) => {
   }
 });
 
-/** SSE: convert a whole album (Spotify or Discogs) into tagged MP3s. */
+/** SSE: convert a whole album (Spotify or Discogs) — or one of its tracks — into tagged MP3s. */
 app.get('/api/convert-album', async (req: Request, res: Response) => {
   const album = String(req.query.album ?? '').trim();
   const quality = String(req.query.quality ?? '0');
@@ -562,12 +562,23 @@ app.get('/api/convert-album', async (req: Request, res: Response) => {
     return;
   }
 
+  // Optional single-track mode: download just tracklist position `track`
+  // (0-based), tagged with this album's title/year/cover.
+  const trackParam = String(req.query.track ?? '').trim();
+  const pick: AlbumTrackPick | undefined = /^\d+$/.test(trackParam)
+    ? {
+        index: Number(trackParam),
+        album: String(req.query.albumName ?? '').trim() || undefined,
+        year: String(req.query.year ?? '').trim() || undefined,
+      }
+    : undefined;
+
   const job = beginJob(req);
   try {
     if (source === 'discogs') {
-      await convertDiscogsAlbum(album, config.mp3Folder, quality, send, job.signal);
+      await convertDiscogsAlbum(album, config.mp3Folder, quality, send, job.signal, pick);
     } else {
-      await convertAlbum(album, config.mp3Folder, quality, send, job.signal);
+      await convertAlbum(album, config.mp3Folder, quality, send, job.signal, pick);
     }
   } catch (err) {
     send({ type: 'error', message: err instanceof Error ? err.message : String(err) });

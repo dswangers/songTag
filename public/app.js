@@ -589,6 +589,8 @@ $('#convert-btn').addEventListener('click', () => {
 const albumLog = $('#album-log');
 let albumChosenId = '';
 let albumChosenSource = 'discogs';
+let albumChosenMeta = { name: '', year: '' };
+let albumPickedTrack = -1; // tracklist index picked for a single-song download, or -1 for the whole album
 $('#clear-album-console').addEventListener('click', () => { albumLog.textContent = ''; });
 
 async function searchAlbums() {
@@ -652,6 +654,8 @@ async function showAlbumPreview(opt) {
   const year = opt.dataset.year || '';
   const image = opt.dataset.image || '';
   const heading = `${name}${artist ? ` — ${artist}` : ''}${year ? ` (${year})` : ''}`;
+  albumChosenMeta = { name, year };
+  setAlbumPick(-1);
 
   box.innerHTML =
     `<div class="album-preview">
@@ -674,8 +678,10 @@ async function showAlbumPreview(opt) {
     sub.textContent = `via ${albumChosenSource} · ${data.tracks.length} tracks`;
     const ol = box.querySelector('.album-tracklist');
     ol.innerHTML = '';
-    data.tracks.forEach((t) => {
+    data.tracks.forEach((t, i) => {
       const li = document.createElement('li');
+      li.dataset.index = String(i);
+      li.title = 'Click to download just this song';
       const dur = fmtDuration(t.durationMs);
       li.innerHTML = `<span class="trk-title"></span>${dur ? `<span class="trk-dur">${dur}</span>` : ''}`;
       li.querySelector('.trk-title').textContent = t.title;
@@ -687,6 +693,24 @@ async function showAlbumPreview(opt) {
   }
 }
 
+// Clicking a track picks it for a single-song download; clicking it again goes
+// back to downloading the whole album.
+function setAlbumPick(index) {
+  albumPickedTrack = index;
+  document.querySelectorAll('#album-chosen .album-tracklist li').forEach((li) => {
+    li.classList.toggle('picked', Number(li.dataset.index) === index);
+  });
+  albumRunnerEls.btnLabel = index >= 0 ? 'Download song' : 'Download album';
+  // Don't clobber the "Converting…" label while a run is in progress.
+  if (albumRunnerEls.btn.textContent !== 'Converting…') albumRunnerEls.btn.textContent = albumRunnerEls.btnLabel;
+}
+$('#album-chosen').addEventListener('click', (e) => {
+  const li = e.target.closest('.album-tracklist li');
+  if (!li) return;
+  const index = Number(li.dataset.index);
+  setAlbumPick(index === albumPickedTrack ? -1 : index);
+});
+
 $('#album-results').addEventListener('change', (e) => {
   const opt = e.target.selectedOptions[0];
   if (!opt || !opt.value) return;
@@ -696,15 +720,21 @@ $('#album-results').addEventListener('change', (e) => {
   showAlbumPreview(opt);
 });
 
-const runAlbumConvert = makeConvertRunner({
+const albumRunnerEls = {
   list: $('#album-list'), log: albumLog, bar: $('#album-bar'),
   progress: $('#album-progress'), summary: $('#album-summary'),
   btn: $('#album-convert-btn'), btnLabel: 'Download album', cancelId: 'album-cancel',
-});
+};
+const runAlbumConvert = makeConvertRunner(albumRunnerEls);
 $('#album-convert-btn').addEventListener('click', () => {
   if (!albumChosenId) { $('#album-search').focus(); return; }
   const quality = $('#album-quality').value;
   const qs = new URLSearchParams({ album: albumChosenId, quality, source: albumChosenSource });
+  if (albumPickedTrack >= 0) {
+    qs.set('track', String(albumPickedTrack));
+    qs.set('albumName', albumChosenMeta.name);
+    if (albumChosenMeta.year) qs.set('year', albumChosenMeta.year);
+  }
   runAlbumConvert(`/api/convert-album?${qs.toString()}`);
 });
 

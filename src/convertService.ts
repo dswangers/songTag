@@ -17,6 +17,13 @@ interface ForcedMeta {
   trackNumber?: string;
 }
 
+/** One track picked from an album's tracklist (Albums tab single-song download). */
+export interface AlbumTrackPick {
+  index: number;  // 0-based position in the album tracklist
+  album?: string; // album title as shown in the UI (falls back to the fetched name)
+  year?: string;
+}
+
 export type ConvertEvent =
   | { type: 'playlist'; name: string; total: number }
   | { type: 'track-start'; index: number; total: number; track: string; artist: string }
@@ -130,6 +137,7 @@ async function convertTrack(
         },
         forcedCover ?? null
       );
+      if (!forcedCover) log('  ⚠ no album cover available — kept the downloaded thumbnail');
       log(`  ✓ tagged with your selection: ${embed.artist} — ${embed.title}` +
         (forcedMeta.album ? ` [${forcedMeta.album}]` : '') +
         (forcedMeta.trackNumber ? ` #${forcedMeta.trackNumber}` : ''));
@@ -269,13 +277,34 @@ export async function convertPlaylist(
   await runConversion(name, tracks, folder, audioQuality, onEvent, signal);
 }
 
+/**
+ * Download just one track of an album, tagged with exactly that album's title,
+ * year, track number and cover (no provider re-search).
+ */
+async function convertPickedTrack(
+  albumName: string,
+  tracks: EmbedTrack[],
+  pick: AlbumTrackPick,
+  folder: string,
+  audioQuality: string,
+  onEvent: ConvertEventHandler,
+  signal?: AbortSignal,
+  cover?: Buffer | null
+): Promise<void> {
+  const t = tracks[pick.index];
+  if (!t) throw new Error(`Track #${pick.index + 1} is not on that album.`);
+  const meta: ForcedMeta = { album: pick.album || albumName, year: pick.year, trackNumber: String(pick.index + 1) };
+  await runConversion(t.title, [t], folder, audioQuality, onEvent, signal, cover ?? null, meta, false);
+}
+
 /** Convert a whole Spotify album into tagged MP3s (same pipeline as playlists). */
 export async function convertAlbum(
   albumInput: string,
   folder: string,
   audioQuality: string,
   onEvent: ConvertEventHandler,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  pick?: AlbumTrackPick
 ): Promise<void> {
   const id = parseAlbumId(albumInput);
   if (!id) throw new Error('Could not parse a Spotify album ID from that input.');
@@ -284,6 +313,7 @@ export async function convertAlbum(
 
   const { name, tracks, coverArtUrl } = await fetchAlbumViaEmbed(id);
   const cover = coverArtUrl ? await downloadImage(coverArtUrl) : null;
+  if (pick) return convertPickedTrack(name, tracks, pick, folder, audioQuality, onEvent, signal, cover);
   await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover, null, false);
 }
 
@@ -327,7 +357,8 @@ export async function convertDiscogsAlbum(
   folder: string,
   audioQuality: string,
   onEvent: ConvertEventHandler,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  pick?: AlbumTrackPick
 ): Promise<void> {
   const id = releaseId.trim().replace(/^\[?r/i, '').replace(/[^0-9]/g, '');
   if (!id) throw new Error('Could not parse a Discogs release ID from that input.');
@@ -337,7 +368,8 @@ export async function convertDiscogsAlbum(
   const { name, tracks, coverArtUrl } = await fetchDiscogsAlbumTracks(id, (m) => onEvent({ type: 'debug', track: 'album', message: m }));
   const cover = coverArtUrl ? await downloadImage(coverArtUrl) : null;
   if (coverArtUrl) {
-    onEvent({ type: 'debug', track: 'album', message: cover ? '  using selected release cover for all tracks' : '  ⚠ could not download selected cover' });
+    onEvent({ type: 'debug', track: 'album', message: cover ? '  using selected release cover' : '  ⚠ could not download selected cover' });
   }
+  if (pick) return convertPickedTrack(name, tracks, pick, folder, audioQuality, onEvent, signal, cover);
   await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover, null, false);
 }
