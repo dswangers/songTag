@@ -249,7 +249,11 @@ export async function searchSpotifyAlbums(q: string, limit = 10): Promise<AlbumR
       name: a.name,
       artist: (a.artists ?? []).map((ar) => ar.name).filter(Boolean).join(', '),
       year: a.release_date ? a.release_date.slice(0, 4) : undefined,
-      imageUrl: a.images?.[a.images.length - 1]?.url ?? a.images?.[0]?.url,
+      // Smallest image that's still sharp in the 140px (2x on HiDPI) preview;
+      // the 64px thumbnail looks blurry there.
+      imageUrl: [...(a.images ?? [])]
+        .sort((x, y) => (x.width ?? 0) - (y.width ?? 0))
+        .find((im) => (im.width ?? 0) >= 300)?.url ?? a.images?.[0]?.url,
       totalTracks: (a as SpotifyApi.AlbumObjectSimplified & { total_tracks?: number }).total_tracks,
     }));
 }
