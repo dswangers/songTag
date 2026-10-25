@@ -15,9 +15,12 @@ export interface EmbedResult {
 
 /** Pull the largest cover-art URL out of an embed entity, if present. */
 function embedCoverArt(entity: any): string | undefined {
-  const sources = entity?.coverArt?.sources;
+  // Current embeds expose art as visualIdentity.image[{ url, maxWidth }];
+  // older ones used coverArt.sources[{ url, width }].
+  const sources = entity?.visualIdentity?.image ?? entity?.coverArt?.sources;
   if (Array.isArray(sources) && sources.length > 0) {
-    const biggest = sources.reduce((a: any, b: any) => ((b?.width ?? 0) > (a?.width ?? 0) ? b : a));
+    const size = (x: any) => x?.maxWidth ?? x?.width ?? 0;
+    const biggest = sources.reduce((a: any, b: any) => (size(b) > size(a) ? b : a));
     if (biggest?.url) return String(biggest.url);
   }
   return undefined;

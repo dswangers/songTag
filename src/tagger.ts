@@ -101,6 +101,13 @@ export function writeId3Tags(
     ...(metadata.trackNumber ? { trackNumber: metadata.trackNumber } : {}),
   };
 
+  // NodeID3.write replaces the whole tag, so with no new art carry over the
+  // file's existing picture (e.g. the yt-dlp thumbnail) instead of wiping it.
+  if (!imageBuffer) {
+    const existing = NodeID3.read(filePath).image;
+    if (existing && typeof existing === "object" && existing.imageBuffer) imageBuffer = existing.imageBuffer;
+  }
+
   if (imageBuffer) {
     tags.image = {
       mime: mimeFromBuffer(imageBuffer),
