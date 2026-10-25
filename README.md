@@ -36,8 +36,9 @@ metadata provider.
   ```
 
 The header of the web UI shows whether yt-dlp and ffmpeg were found. Keep yt-dlp
-up to date (`winget upgrade yt-dlp.yt-dlp`) — YouTube changes often break older
-versions.
+up to date with `yt-dlp -U` — YouTube changes often break older versions. (After a
+self-update, `winget upgrade` refuses to touch yt-dlp because the file was
+"modified"; just keep using `yt-dlp -U`.)
 
 `npm install` covers the Node packages: `express` (web server), `node-id3` (ID3
 tags), `spotify-web-api-node` (Spotify API), `axios` (HTTP) and `dotenv` (`.env`
