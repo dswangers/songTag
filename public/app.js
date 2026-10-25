@@ -426,11 +426,31 @@ $('#spotify-logout').addEventListener('click', async () => {
   refreshSpotifyStatus();
 });
 
-$('#load-playlists-btn').addEventListener('click', async () => {
+// The playlist box takes a URL/ID, or searches "My playlists" by name. A picked
+// playlist shows its name in the box while its ID is kept here.
+let myPlaylists = null;     // cached /api/spotify/playlists result
+let playlistChosen = null;  // { id, name } picked from My playlists
+
+const looksLikePlaylistRef = (s) => /spotify|playlist/i.test(s) || /^[A-Za-z0-9]{22}$/.test(s);
+
+/** What to send the server: the picked playlist's ID, else the typed URL/ID. */
+function resolvedPlaylistInput() {
+  const value = $('#playlist-input').value.trim();
+  if (playlistChosen && value === playlistChosen.name) return playlistChosen.id;
+  return looksLikePlaylistRef(value) ? value : '';
+}
+
+async function loadMyPlaylists() {
+  if (myPlaylists) return myPlaylists;
+  const resp = await fetch('/api/spotify/playlists');
+  const data = await resp.json();
+  if (!resp.ok || data.error) throw new Error(data.error || 'Failed to load playlists');
+  myPlaylists = data.playlists || [];
+  return myPlaylists;
+}
+
+async function showPlaylistPicker(filter) {
   const picker = $('#playlist-picker');
-  if (!picker.classList.contains('hidden')) { picker.classList.add('hidden'); return; }
-  picker.innerHTML = '<option>Loading…</option>';
-  picker.classList.remove('hidden');
   const showMsg = (msg) => {
     const o = document.createElement('option');
     o.value = '';
@@ -439,28 +459,67 @@ $('#load-playlists-btn').addEventListener('click', async () => {
     picker.innerHTML = '';
     picker.appendChild(o);
   };
+  picker.classList.remove('hidden');
+  if (!myPlaylists) showMsg('Loading…');
 
+  let all;
   try {
-    const resp = await fetch('/api/spotify/playlists');
-    const data = await resp.json();
-    if (!resp.ok || data.error) { showMsg(data.error || 'Failed to load playlists'); return; }
-    if (!data.playlists || data.playlists.length === 0) { showMsg('No playlists found'); return; }
-    picker.innerHTML = '';
-    data.playlists.forEach((pl) => {
-      const opt = document.createElement('option');
-      opt.value = pl.id;
-      opt.textContent = pl.trackCount ? `${pl.name} (${pl.trackCount})` : pl.name;
-      picker.appendChild(opt);
-    });
+    all = await loadMyPlaylists();
   } catch (e) {
-    showMsg('Failed to load — connect Spotify first');
+    showMsg(e instanceof Error && e.message !== 'Failed to fetch' ? e.message : 'Failed to load — connect Spotify first');
+    return;
   }
+  const q = filter.trim().toLowerCase();
+  const matches = q ? all.filter((pl) => pl.name.toLowerCase().includes(q)) : all;
+  if (matches.length === 0) { showMsg(all.length ? `No playlists match "${filter.trim()}"` : 'No playlists found'); return; }
+  picker.innerHTML = '';
+  matches.forEach((pl) => {
+    const opt = document.createElement('option');
+    opt.value = pl.id;
+    opt.dataset.name = pl.name;
+    opt.textContent = pl.trackCount ? `${pl.name} (${pl.trackCount})` : pl.name;
+    picker.appendChild(opt);
+  });
+}
+
+function pickPlaylist(opt) {
+  if (!opt || !opt.value) return; // ignore disabled/message rows
+  // Trimmed so it still matches the box's trimmed value (names like "Israeli ").
+  playlistChosen = { id: opt.value, name: (opt.dataset.name || '').trim() || opt.value };
+  $('#playlist-input').value = playlistChosen.name;
+  $('#playlist-picker').classList.add('hidden');
+  showPlaylistPreview();
+}
+
+$('#load-playlists-btn').addEventListener('click', () => {
+  const picker = $('#playlist-picker');
+  if (!picker.classList.contains('hidden')) { picker.classList.add('hidden'); return; }
+  showPlaylistPicker('');
 });
 
-$('#playlist-picker').addEventListener('change', (e) => {
-  if (!e.target.value) return; // ignore disabled/message rows
-  $('#playlist-input').value = e.target.value;
-  e.target.classList.add('hidden');
+$('#playlist-input').addEventListener('input', (e) => {
+  playlistChosen = null; // editing the box drops the previous pick
+  const value = e.target.value;
+  if (!value.trim() || looksLikePlaylistRef(value)) { $('#playlist-picker').classList.add('hidden'); return; }
+  showPlaylistPicker(value);
+});
+
+$('#playlist-input').addEventListener('keydown', (e) => {
+  const picker = $('#playlist-picker');
+  const open = !picker.classList.contains('hidden');
+  if (e.key === 'Escape') { picker.classList.add('hidden'); return; }
+  if (e.key === 'ArrowDown' && open) { e.preventDefault(); picker.focus(); picker.selectedIndex = 0; return; }
+  if (e.key !== 'Enter') return;
+  // Enter on a name search picks the top match; on a URL/ID it loads the preview.
+  if (open && !looksLikePlaylistRef(e.target.value)) pickPlaylist(picker.options[0]);
+  else showPlaylistPreview();
+});
+
+// Click (or Enter) commits a pick; arrowing through the list just moves the highlight.
+$('#playlist-picker').addEventListener('click', (e) => pickPlaylist(e.currentTarget.selectedOptions[0]));
+$('#playlist-picker').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); pickPlaylist(e.target.selectedOptions[0]); }
+  else if (e.key === 'Escape') { e.target.classList.add('hidden'); $('#playlist-input').focus(); }
 });
 
 $('#clear-convert-console').addEventListener('click', () => { convLog.textContent = ''; });
@@ -573,17 +632,130 @@ function makeConvertRunner(els) {
 }
 
 // Convert tab (Spotify playlist → MP3)
-const runPlaylistConvert = makeConvertRunner({
+const playlistRunnerEls = {
   list: $('#convert-list'), log: convLog, bar: $('#convert-bar'),
   progress: $('#convert-progress'), summary: $('#convert-summary'),
   btn: $('#convert-btn'), btnLabel: 'Convert', cancelId: 'convert-cancel',
-});
+};
+const runPlaylistConvert = makeConvertRunner(playlistRunnerEls);
 $('#convert-btn').addEventListener('click', () => {
-  const playlist = $('#playlist-input').value.trim();
+  const playlist = resolvedPlaylistInput();
   if (!playlist) { $('#playlist-input').focus(); return; }
   const quality = $('#convert-quality').value;
+  // Only honour a picked song if the preview still shows this playlist.
+  const picked = playlistPickedTrack >= 0 && playlistPreviewFor === playlist ? playlistTracks[playlistPickedTrack] : null;
+  if (picked) {
+    // A playlist carries no album info — the full tagging workflow fills it in.
+    const qs = new URLSearchParams({
+      title: picked.title, artist: picked.artist || '', duration: String(picked.durationMs || 0), quality,
+    });
+    runPlaylistConvert(`/api/convert-song?${qs.toString()}`);
+    return;
+  }
   runPlaylistConvert(`/api/convert?${new URLSearchParams({ playlist, quality }).toString()}`);
 });
+
+// Playlist preview: cover + newest-first tracklist, 15 at a time.
+const PLAYLIST_PAGE = 15;
+let playlistTracks = [];       // newest-first, from /api/playlist-preview
+let playlistShown = 0;
+let playlistPickedTrack = -1;  // index into playlistTracks, or -1 for the whole playlist
+let playlistPreviewFor = '';   // input the current preview was loaded for
+let playlistPreviewSeq = 0;    // drops responses for a playlist no longer selected
+
+async function showPlaylistPreview() {
+  const input = resolvedPlaylistInput();
+  const box = $('#playlist-chosen');
+  // A half-typed name search isn't a playlist yet — keep the current preview.
+  if (!input && $('#playlist-input').value.trim()) return;
+  if (input === playlistPreviewFor) return;
+  playlistPreviewFor = input;
+  const seq = ++playlistPreviewSeq;
+  playlistTracks = [];
+  playlistShown = 0;
+  setPlaylistPick(-1);
+  if (!input) { box.innerHTML = ''; return; }
+
+  box.innerHTML =
+    `<div class="album-preview">
+       <img class="album-cover hidden" alt="" />
+       <div class="album-tracks">
+         <div class="album-preview-title">Loading playlist…</div>
+         <div class="album-preview-sub"></div>
+         <ol class="album-tracklist"></ol>
+         <button class="more-btn load-more hidden">Load more</button>
+       </div>
+     </div>`;
+
+  try {
+    const resp = await fetch(`/api/playlist-preview?${new URLSearchParams({ playlist: input }).toString()}`);
+    const data = await resp.json();
+    if (seq !== playlistPreviewSeq) return;
+    if (!resp.ok || data.error) throw new Error(data.error || 'Could not load playlist');
+    playlistTracks = data.tracks;
+    if (data.coverArtUrl) {
+      const img = box.querySelector('.album-cover');
+      img.src = data.coverArtUrl;
+      img.classList.remove('hidden');
+    }
+    const name = data.name === 'Playlist' && playlistChosen ? playlistChosen.name : data.name;
+    box.querySelector('.album-preview-title').textContent = `${name}${data.owner ? ` — ${data.owner}` : ''}`;
+    box.querySelector('.album-preview-sub').textContent =
+      data.sortedBy === 'added' ? `${data.tracks.length} tracks · newest added first`
+      : data.capped ? 'first 100 tracks · approx. newest first (connect Spotify for exact order)'
+      : `${data.tracks.length} tracks · approx. newest first (connect Spotify for exact order)`;
+    renderMorePlaylistTracks();
+  } catch (err) {
+    if (seq !== playlistPreviewSeq) return;
+    playlistPreviewFor = ''; // allow retrying the same input
+    box.querySelector('.album-preview-title').textContent = 'Could not load playlist';
+    box.querySelector('.album-preview-sub').textContent = err instanceof Error ? err.message : String(err);
+  }
+}
+
+function renderMorePlaylistTracks() {
+  const box = $('#playlist-chosen');
+  const ol = box.querySelector('.album-tracklist');
+  const end = Math.min(playlistShown + PLAYLIST_PAGE, playlistTracks.length);
+  for (let i = playlistShown; i < end; i++) {
+    const t = playlistTracks[i];
+    const li = document.createElement('li');
+    li.dataset.index = String(i);
+    li.title = 'Click to download just this song';
+    const dur = fmtDuration(t.durationMs);
+    const added = t.addedAt ? new Date(t.addedAt) : null;
+    li.innerHTML = `<span class="trk-title"></span><span class="trk-artist"></span>${dur ? `<span class="trk-dur">${dur}</span>` : ''}` +
+      (added && !isNaN(added) ? '<span class="trk-dur trk-added"></span>' : '');
+    li.querySelector('.trk-title').textContent = t.title;
+    li.querySelector('.trk-artist').textContent = t.artist ? ` — ${t.artist}` : '';
+    if (added && !isNaN(added)) {
+      li.querySelector('.trk-added').textContent = `added ${added.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`;
+    }
+    ol.appendChild(li);
+  }
+  playlistShown = end;
+  box.querySelector('.load-more').classList.toggle('hidden', playlistShown >= playlistTracks.length);
+}
+
+// Clicking a track picks it for a single-song download; clicking it again goes
+// back to converting the whole playlist.
+function setPlaylistPick(index) {
+  playlistPickedTrack = index;
+  document.querySelectorAll('#playlist-chosen .album-tracklist li').forEach((li) => {
+    li.classList.toggle('picked', Number(li.dataset.index) === index);
+  });
+  playlistRunnerEls.btnLabel = index >= 0 ? 'Download song' : 'Convert';
+  if (playlistRunnerEls.btn.textContent !== 'Converting…') playlistRunnerEls.btn.textContent = playlistRunnerEls.btnLabel;
+}
+
+$('#playlist-chosen').addEventListener('click', (e) => {
+  if (e.target.closest('.load-more')) { renderMorePlaylistTracks(); return; }
+  const li = e.target.closest('.album-tracklist li');
+  if (!li) return;
+  const index = Number(li.dataset.index);
+  setPlaylistPick(index === playlistPickedTrack ? -1 : index);
+});
+$('#playlist-input').addEventListener('change', showPlaylistPreview);
 
 // ─── Albums tab (search Spotify album → tagged MP3s) ─────────────────────────
 const albumLog = $('#album-log');

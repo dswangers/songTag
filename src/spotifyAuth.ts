@@ -147,6 +147,45 @@ export async function getUserPlaylists(): Promise<PlaylistSummary[]> {
   return out;
 }
 
+export interface DatedPlaylistTrack {
+  title: string;
+  artist: string;
+  durationMs: number;
+  addedAt: string; // ISO timestamp the track was added to the playlist
+}
+
+/**
+ * Read a playlist's full track list WITH each track's date added, via the
+ * user's OAuth token. Spotify's 2026 dev-mode API serves playlist contents at
+ * /playlists/{id}/items (the old /tracks endpoint 403s), and only for
+ * playlists the user owns or collaborates on.
+ */
+export async function getPlaylistItemsDated(playlistId: string): Promise<DatedPlaylistTrack[]> {
+  const client = await ensureAccess();
+  const token = client.getAccessToken();
+  const out: DatedPlaylistTrack[] = [];
+  let url: string | null =
+    `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/items?limit=50`;
+  while (url) {
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!resp.ok) throw new Error(`Spotify ${resp.status} reading playlist items`);
+    const body: any = await resp.json();
+    for (const it of body.items ?? []) {
+      // Items carry the track/episode under `item` (2026 API) or `track` (legacy).
+      const t = it?.item ?? it?.track;
+      if (!t || !t.name || t.type === 'episode') continue;
+      out.push({
+        title: String(t.name),
+        artist: (t.artists ?? []).map((a: any) => a.name).filter(Boolean).join(', '),
+        durationMs: Number(t.duration_ms ?? 0),
+        addedAt: String(it.added_at ?? ''),
+      });
+    }
+    url = body.next ?? null;
+  }
+  return out;
+}
+
 /** Get the playlist name and all of its tracks. */
 export async function getPlaylistTracks(
   playlistId: string

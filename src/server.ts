@@ -9,13 +9,15 @@ import { downloadAudio, checkDependencies } from './downloadService';
 import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertSong, type AlbumTrackPick } from './convertService';
 import { searchSpotifyAlbums, searchSpotifyTracks } from './providers/spotify';
 import { searchDiscogsAlbums, fetchDiscogsAlbumTracks, searchDiscogsSongs } from './providers/discogs';
-import { fetchAlbumViaEmbed } from './spotifyEmbed';
+import { fetchAlbumViaEmbed, fetchPlaylistViaEmbed } from './spotifyEmbed';
 import {
   getAuthorizeUrl,
   handleCallback,
   isAuthenticated,
   logout,
   getUserPlaylists,
+  parsePlaylistId,
+  getPlaylistItemsDated,
 } from './spotifyAuth';
 
 const app = express();
@@ -420,6 +422,49 @@ app.get('/api/spotify/playlists', async (_req: Request, res: Response) => {
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+/**
+ * Playlist preview (cover + tracklist) for the Playlist tab, newest-added first.
+ * When Spotify is connected, the API gives every track with its real date added
+ * (only for playlists the user owns/collaborates on). Otherwise fall back to the
+ * embed: no dates and capped at 100, so reversed order is only an approximation.
+ */
+app.get('/api/playlist-preview', async (req: Request, res: Response) => {
+  const id = parsePlaylistId(String(req.query.playlist ?? ''));
+  if (!id) {
+    res.status(400).json({ error: 'Could not parse a Spotify playlist ID from that input.' });
+    return;
+  }
+  const [embed, dated] = await Promise.allSettled([
+    fetchPlaylistViaEmbed(id, undefined, false), // name + cover
+    isAuthenticated() ? getPlaylistItemsDated(id) : Promise.reject(new Error('not connected')),
+  ]);
+
+  if (dated.status === 'fulfilled' && dated.value.length > 0) {
+    const meta = embed.status === 'fulfilled' ? embed.value : null;
+    // Newest added first; ties (bulk adds) keep the later playlist position first.
+    const tracks = dated.value
+      .map((t, i) => ({ ...t, i }))
+      .sort((a, b) => b.addedAt.localeCompare(a.addedAt) || b.i - a.i)
+      .map(({ title, artist, durationMs, addedAt }) => ({ title, artist, durationMs, addedAt }));
+    res.json({ name: meta?.name ?? 'Playlist', owner: meta?.owner, coverArtUrl: meta?.coverArtUrl, sortedBy: 'added', tracks });
+    return;
+  }
+  if (embed.status === 'rejected') {
+    const err = embed.reason;
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    return;
+  }
+  const { name, owner, coverArtUrl, tracks } = embed.value;
+  res.json({
+    name,
+    owner,
+    coverArtUrl,
+    sortedBy: 'reversed',
+    capped: tracks.length >= 100, // embed only exposes the first 100 tracks
+    tracks: tracks.reverse().map((t) => ({ title: t.title, artist: t.artist, durationMs: t.durationMs })),
+  });
 });
 
 /** SSE: convert a Spotify playlist into tagged MP3s. */

@@ -363,6 +363,8 @@ button#retag-clear {
 .album-tracklist li::marker { color: var(--muted); font-size: 12px; }
 .album-tracklist .trk-title { }
 .album-tracklist .trk-dur { color: var(--muted); font-size: 12px; margin-left: 8px; }
+.album-tracklist .trk-artist { color: var(--muted); }
+.album-tracks .load-more { margin: 10px 0 0; }
 
 /* Songs tab — selected-song metadata */
 .song-meta {

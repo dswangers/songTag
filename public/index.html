@@ -108,7 +108,7 @@
       <input
         id="playlist-input"
         type="text"
-        placeholder="Spotify playlist URL or ID…"
+        placeholder="Search your playlists, or paste a Spotify playlist URL…"
         autocomplete="off"
       />
       <button id="load-playlists-btn">My playlists ▾</button>
@@ -131,8 +131,11 @@
     </div>
     <div id="convert-summary" class="count"></div>
 
-    <div class="tag-layout">
-      <ul id="convert-list" class="files"></ul>
+    <div class="preview-layout">
+      <div class="preview-main">
+        <div id="playlist-chosen" class="preview-pane"></div>
+        <ul id="convert-list" class="files"></ul>
+      </div>
       <div class="console-wrap">
         <div class="console-head">
           <span>Console</span>

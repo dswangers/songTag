@@ -126,20 +126,23 @@ async function pageRemainingTracks(
 
 /**
  * Read a Spotify playlist's track list from its public embed page, paging past
- * the embed's 100-track cap when possible.
+ * the embed's 100-track cap when possible (`pageRest`; off for quick previews).
  */
 export async function fetchPlaylistViaEmbed(
   playlistId: string,
-  log: Logger = noop
-): Promise<EmbedResult> {
+  log: Logger = noop,
+  pageRest = true
+): Promise<EmbedResult & { owner?: string }> {
   const { entity, accessToken } = await readEmbed('playlist', playlistId);
   const tracks = mapEmbedTrackList(entity);
   if (tracks.length === 0) {
     throw new Error('Playlist has no readable tracks (private, or empty).');
   }
+  const coverArtUrl = embedCoverArt(entity);
+  const owner = entity?.subtitle ? String(entity.subtitle) : undefined;
 
   // A full 100 means there are very likely more — try to fetch the rest.
-  if (tracks.length === 100 && accessToken) {
+  if (pageRest && tracks.length === 100 && accessToken) {
     log('  playlist has 100+ tracks — attempting to page the remainder…');
     const extra = await pageRemainingTracks(playlistId, accessToken, log);
     if (extra.length > 0) {
@@ -148,7 +151,7 @@ export async function fetchPlaylistViaEmbed(
     }
   }
 
-  return { name: entity?.name ?? 'Playlist', tracks };
+  return { name: entity?.name ?? 'Playlist', tracks, coverArtUrl, owner };
 }
 
 /** Read a Spotify album's track list from its public embed page. */
