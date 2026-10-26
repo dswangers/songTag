@@ -16,6 +16,8 @@ export interface YtCandidate {
 export interface YtMatch extends YtCandidate {
   score: number;
   reason: string;
+  /** Official channel (Topic / artist) AND exact title — almost surely the right upload. */
+  strong: boolean;
 }
 
 /** Words that signal a non-official / wrong version when NOT in the track title. */
@@ -84,20 +86,30 @@ async function searchYouTube(query: string, n: number, signal?: AbortSignal): Pr
 export function scoreCandidate(
   c: YtCandidate,
   want: { title: string; artist: string; durationSec: number }
-): { score: number; reason: string } {
+): { score: number; reason: string; strong: boolean } {
   const reasons: string[] = [];
   let score = 0;
 
   const nTitle = normalize(c.title);
   const nChannel = normalize(c.channel);
   const wTitle = normalize(want.title);
-  const wArtist = normalize(want.artist);
+  // Each credited artist on its own ("ANOTR, 54 Ultra" → ["anotr", "54 ultra"]),
+  // so a multi-artist track still recognises the main artist's channel.
+  const wArtists = want.artist
+    .split(/,|&|\bfeat\.?\s|\bft\.?\s|\sx\s/i)
+    .map(normalize)
+    .filter(Boolean);
 
   // ── Channel signals (strongest) ────────────────────────────────────────────
   const isTopic = /-\s*topic$/.test(c.channel.toLowerCase().trim());
-  const artistInChannel = wArtist.length > 0 && nChannel.includes(wArtist);
-  if (isTopic) { score += 55; reasons.push('official audio (Topic)'); }
+  const topicName = normalize(c.channel.replace(/-\s*topic\s*$/i, ''));
+  const artistInChannel = wArtists.some((a) => nChannel.includes(a));
+  // A Topic channel is only the official audio if it's one of the song's artists
+  // — "Release - Topic" style karaoke/cover labels are Topic channels too.
+  const artistTopic = isTopic && (wArtists.length === 0 || wArtists.some((a) => topicName.includes(a) || a.includes(topicName)));
+  if (artistTopic) { score += 55; reasons.push('official audio (Topic)'); }
   else if (artistInChannel) { score += 30; reasons.push('artist channel'); }
+  else if (isTopic) { score += 20; reasons.push('other Topic channel'); }
 
   // ── Title relevance (#1 priority) ───────────────────────────────────────────
   // The right song is decided by its TITLE. A title mismatch is disqualifying so
@@ -111,7 +123,16 @@ export function scoreCandidate(
   else if (ratio >= 0.75) { score += 25; reasons.push('most of title'); }
   else if (ratio >= 0.5) { score -= 15; reasons.push('partial title'); }
   else { score -= 70; reasons.push('title mismatch'); }
-  if (wArtist && nTitle.includes(wArtist)) { score += 8; reasons.push('artist in title'); }
+
+  // Official audio ("Provided to YouTube by …") is titled with JUST the song name,
+  // so a bare exact title on an official channel is the strongest sign of it.
+  // Artist-in-title only helps third-party uploads ("Artist - Song") rank among
+  // themselves — it must never lift one above the official upload.
+  const official = artistTopic || artistInChannel;
+  const cleanTitle = wTitle.length > 0 && nTitle === wTitle;
+  if (official && cleanTitle) { score += 15; reasons.push('clean official title'); }
+  else if (!official && wArtists.some((a) => nTitle.includes(a))) { score += 8; reasons.push('artist in title'); }
+  const strong = official && titleTokens.length > 0 && ratio >= 0.999;
 
   // ── Duration match (tiebreaker only — must not override the title) ──────────
   if (want.durationSec > 0 && c.durationSec > 0) {
@@ -134,7 +155,7 @@ export function scoreCandidate(
   // ── Popularity tiebreaker (tiny) ────────────────────────────────────────────
   if (c.viewCount > 0) score += Math.min(5, Math.log10(c.viewCount));
 
-  return { score, reason: reasons.join(', ') || 'no strong signals' };
+  return { score, reason: reasons.join(', ') || 'no strong signals', strong };
 }
 
 /**
@@ -146,25 +167,34 @@ export async function findYouTubeCandidates(
   log: Logger = () => {},
   signal?: AbortSignal
 ): Promise<YtMatch[]> {
-  const query = `${want.artist} ${want.title}`.trim();
-  log(`  yt search: "${query}" (want ${want.durationSec}s)`);
+  const rank = (cands: YtCandidate[]): YtMatch[] =>
+    cands.map((c) => ({ ...c, ...scoreCandidate(c, want) })).sort((a, b) => b.score - a.score);
+  const search = async (query: string): Promise<YtCandidate[]> => {
+    log(`  yt search: ${query} (want ${want.durationSec}s)`);
+    try {
+      return await searchYouTube(query, 6, signal);
+    } catch (err) {
+      log(`  ✗ yt-dlp search failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+  };
 
-  let candidates: YtCandidate[];
-  try {
-    candidates = await searchYouTube(query, 6, signal);
-  } catch (err) {
-    log(`  ✗ yt-dlp search failed: ${err instanceof Error ? err.message : String(err)}`);
-    return [];
+  // 1) `title artist "topic"` steers YouTube toward the official auto-generated
+  //    audio (Topic / "Provided to YouTube by …" uploads).
+  const candidates = await search(`${want.title} ${want.artist} "topic"`.trim());
+  let ranked = rank(candidates);
+
+  // 2) No clear official upload? Widen with the plain search and re-rank both.
+  if (!ranked[0]?.strong && !signal?.aborted) {
+    const seen = new Set(candidates.map((c) => c.id));
+    const extra = (await search(`${want.artist} ${want.title}`.trim())).filter((c) => !seen.has(c.id));
+    ranked = rank([...candidates, ...extra]);
   }
 
-  if (candidates.length === 0) {
+  if (ranked.length === 0) {
     log('  ✗ no YouTube results');
     return [];
   }
-
-  const ranked = candidates
-    .map((c) => ({ ...c, ...scoreCandidate(c, want) }))
-    .sort((a, b) => b.score - a.score);
 
   ranked.slice(0, 5).forEach((c, i) => {
     log(`    ${i + 1}. score=${Math.round(c.score)} [${c.durationSec}s] "${c.title}" — ${c.channel} (${c.reason})`);
