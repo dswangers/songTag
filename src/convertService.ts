@@ -4,6 +4,7 @@ import { config } from './config';
 import { parsePlaylistId, isAuthenticated, getPlaylistItemsDated } from './spotifyAuth';
 import { fetchPlaylistViaEmbed, fetchAlbumViaEmbed, type EmbedTrack } from './spotifyEmbed';
 import { fetchDiscogsAlbumTracks } from './providers/discogs';
+import { fetchMusicBrainzAlbumTracks } from './providers/musicbrainz';
 import { findYouTubeCandidates } from './youtubeMatch';
 import { downloadVideoToFile } from './downloadService';
 import { updateId3Tags, updateAlbumArt, writeId3Tags } from './tagger';
@@ -51,6 +52,19 @@ function safeName(s: string): string {
 
 /** Minimum YouTube match score to accept; below this we skip the track. */
 const MIN_SCORE = 25;
+/** Tries per YouTube candidate before moving to the next (403s are often one-offs). */
+const DOWNLOAD_ATTEMPTS = 2;
+const RETRY_DELAY_MS = 5000;
+
+/** Wait `ms`, returning early if the job is cancelled. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const t = setTimeout(done, ms);
+    function done() { clearTimeout(t); signal?.removeEventListener('abort', done); resolve(); }
+    signal?.addEventListener('abort', done, { once: true });
+  });
+}
 
 async function convertTrack(
   embed: EmbedTrack,
@@ -87,9 +101,11 @@ async function convertTrack(
       return { status: 'skip' };
     }
 
-    // Try candidates best-first; fall back to the next if a download fails (403).
+    // Try candidates best-first. YouTube 403s are usually one-off rejections of
+    // that request (the same video downloads fine moments later), so retry each
+    // candidate once after a pause before falling back to the next one.
     let finalPath: string | null = null;
-    for (let i = 0; i < Math.min(ranked.length, 3); i++) {
+    candidates: for (let i = 0; i < Math.min(ranked.length, 3); i++) {
       if (signal?.aborted) return { status: 'skip' };
       const cand = ranked[i];
       onEvent({
@@ -100,14 +116,22 @@ async function convertTrack(
         url: cand.url,
         score: Math.round(cand.score),
       });
-      try {
-        finalPath = await downloadVideoToFile(cand.url, base, audioQuality, log, signal);
-        break;
-      } catch (err) {
-        if (signal?.aborted) return { status: 'skip' };
-        log(`  ✗ download failed (${err instanceof Error ? err.message : err}); trying next candidate…`);
+      for (let attempt = 1; attempt <= DOWNLOAD_ATTEMPTS; attempt++) {
+        try {
+          finalPath = await downloadVideoToFile(cand.url, base, audioQuality, log, signal);
+          break candidates;
+        } catch (err) {
+          if (signal?.aborted) return { status: 'skip' };
+          const msg = err instanceof Error ? err.message : String(err);
+          if (attempt < DOWNLOAD_ATTEMPTS) {
+            log(`  ✗ download failed (${msg}); retrying in ${RETRY_DELAY_MS / 1000}s…`);
+            await abortableDelay(RETRY_DELAY_MS, signal);
+            if (signal?.aborted) return { status: 'skip' };
+          } else {
+            log(`  ✗ download failed (${msg}); trying next candidate…`);
+          }
+        }
       }
-      if (signal?.aborted) return { status: 'skip' };
     }
 
     if (!finalPath) {
@@ -390,5 +414,29 @@ export async function convertDiscogsAlbum(
     onEvent({ type: 'debug', track: 'album', message: cover ? '  using selected release cover' : '  ⚠ could not download selected cover' });
   }
   if (pick) return convertPickedTrack(name, tracks, pick, folder, audioQuality, onEvent, signal, cover);
+  await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover, null, false);
+}
+
+/**
+ * Convert a MusicBrainz album (release group) into tagged MP3s, using the
+ * tracklist of its standard-edition release.
+ */
+export async function convertMusicBrainzAlbum(
+  releaseGroupId: string,
+  folder: string,
+  audioQuality: string,
+  onEvent: ConvertEventHandler,
+  signal?: AbortSignal,
+  pick?: AlbumTrackPick
+): Promise<void> {
+  fs.mkdirSync(folder, { recursive: true });
+
+  const log = (m: string) => onEvent({ type: 'debug', track: 'album', message: m });
+  const { name, year, tracks, coverArtUrl } = await fetchMusicBrainzAlbumTracks(releaseGroupId, log);
+  const cover = coverArtUrl ? await downloadImage(coverArtUrl) : null;
+  log(cover ? '  using album cover from the Cover Art Archive' : '  ⚠ no album cover on the Cover Art Archive');
+  if (pick) {
+    return convertPickedTrack(name, tracks, { ...pick, year: pick.year || year }, folder, audioQuality, onEvent, signal, cover);
+  }
   await runConversion(name, tracks, folder, audioQuality, onEvent, signal, cover, null, false);
 }

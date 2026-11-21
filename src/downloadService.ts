@@ -1,6 +1,7 @@
 import { spawn, execFile } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import * as fs from 'fs';
 
 const execFileAsync = promisify(execFile);
 
@@ -76,6 +77,30 @@ export async function checkDependencies(): Promise<{
   return { ytDlp, ffmpeg };
 }
 
+/** What yt-dlp leaves next to `${outBase}.` while working: video/audio parts, fragments, temp mp3. */
+const PARTIAL_SUFFIX_RE = /^(f\d+\.)?(webm|m4a|mp4|opus|ogg|weba|mp3|temp\.mp3)(\.part(-Frag\d+)?|\.ytdl)?$/i;
+
+/**
+ * Delete a cancelled/failed download's leftovers — including a half-written
+ * mp3, which would otherwise look "already downloaded" and be skipped forever.
+ * Retries briefly because Windows keeps files locked for a moment after the
+ * yt-dlp/ffmpeg tree is killed.
+ */
+async function removePartials(outBase: string): Promise<void> {
+  const dir = path.dirname(outBase);
+  const prefix = `${path.basename(outBase)}.`;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { return; }
+    const left = names.filter((n) => n.startsWith(prefix) && PARTIAL_SUFFIX_RE.test(n.slice(prefix.length)));
+    if (left.length === 0) return;
+    for (const n of left) {
+      try { fs.unlinkSync(path.join(dir, n)); } catch { /* locked — retry below */ }
+    }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+
 /**
  * Download a single video's audio to an exact MP3 path (used by the converter).
  * `outBase` is the path WITHOUT extension; the result is `${outBase}.mp3`.
@@ -139,11 +164,12 @@ export function downloadVideoToFile(
       cleanup();
       reject(signal?.aborted ? new Error('cancelled') : err);
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
       cleanup();
-      if (signal?.aborted) reject(new Error('cancelled'));
-      else if (code === 0) resolve(`${outBase}.mp3`);
-      else reject(new Error(`yt-dlp exited with code ${code}`));
+      if (!signal?.aborted && code === 0) { resolve(`${outBase}.mp3`); return; }
+      // Clean up before rejecting, so a retry / next candidate starts from nothing.
+      await removePartials(outBase);
+      reject(signal?.aborted ? new Error('cancelled') : new Error(`yt-dlp exited with code ${code}`));
     });
   });
 }
