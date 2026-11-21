@@ -46,10 +46,23 @@ async function loadHeader() {
 
 /**
  * Default the Songs/Albums source pickers to match the configured API provider:
- * Spotify when API_PROVIDER=spotify, otherwise Discogs.
+ * (Spotify, Discogs or MusicBrainz).
  */
+const SEARCH_SOURCES = ['spotify', 'discogs', 'musicbrainz'];
+const SOURCE_ENDPOINTS = {
+  spotify: '/api/spotify/search-albums',
+  discogs: '/api/discogs/search-albums',
+  musicbrainz: '/api/musicbrainz/search-albums',
+};
+function pickSource(value) {
+  return SEARCH_SOURCES.includes(value) ? value : 'discogs';
+}
+/** Hide a cover image that fails to load (MusicBrainz albums may have no art). */
+function hideBrokenCover(img) {
+  img.addEventListener('error', () => img.remove(), { once: true });
+}
 function applyProviderDefault(provider) {
-  const src = provider === 'spotify' ? 'spotify' : 'discogs';
+  const src = pickSource(provider);
   const albumSel = $('#album-source');
   const songSel = $('#song-source');
   if (albumSel) albumSel.value = src;
@@ -74,11 +87,16 @@ function streamSse(url, onEvent, onClose) {
 let activeStream = null; // { close: fn }
 
 async function cancelActive() {
+  // Grab the stream first, so a new run started while the fetch below is in
+  // flight isn't the one that gets closed.
+  const stream = activeStream;
+  activeStream = null;
   try { await fetch('/api/cancel', { method: 'POST' }); } catch { /* ignore */ }
-  if (activeStream) { try { activeStream.close(); } catch { /* ignore */ } activeStream = null; }
+  if (stream) { try { stream.close(); } catch { /* ignore */ } }
 }
 
-[['download-cancel'], ['tag-cancel'], ['convert-cancel'], ['album-cancel'], ['song-cancel'], ['retag-cancel']].forEach(([id]) => {
+// (Spotify → MP3 / Albums / Songs cancel only their own queued download — see the download queue.)
+[['download-cancel'], ['tag-cancel'], ['retag-cancel']].forEach(([id]) => {
   const el = document.getElementById(id);
   if (el) el.addEventListener('click', cancelActive);
 });
@@ -546,22 +564,45 @@ function makeConvertRunner(els) {
     if (detail !== undefined) li.querySelector('.detail').textContent = detail;
   };
 
-  return function start(streamUrl) {
+  // Placeholder rows for queued jobs: job key -> row label.
+  const queuedRows = new Map();
+  const dropQueuedRow = (key) => {
+    const label = queuedRows.get(key);
+    if (label === undefined) return;
+    queuedRows.delete(key);
+    const li = nodes.get(label);
+    if (li && li.classList.contains('queued')) { li.remove(); nodes.delete(label); }
+  };
+
+  // opts.fresh: clear the previous run's list/log (false when a queued job
+  // follows another from the same tab, so results accumulate).
+  // opts.job: the queued job being started (replaces its placeholder row).
+  // opts.onDone: called exactly once when this run ends for any reason.
+  function start(streamUrl, opts = {}) {
     els.progress.classList.remove('hidden');
     els.bar.style.width = '0%';
-    els.log.textContent = '';
-    els.list.innerHTML = '';
-    nodes.clear();
+    if (opts.fresh !== false) {
+      reset();
+    } else if (opts.label) {
+      appendLog(els.log, `\n── next in queue: ${opts.label} ──`, 'line-head');
+    }
     els.summary.textContent = '';
-    els.btn.disabled = true;
-    els.btn.textContent = 'Converting…';
+    if (opts.job) {
+      // A single song keeps its row (the server reports progress under the
+      // same "Artist - Title" label); a playlist/album row is replaced by one
+      // row per track as they're processed.
+      dropQueuedRow(opts.job.key);
+      if (opts.job.rowLabel) setState(opts.job.rowLabel, 'working', '⟳', 'starting…');
+    }
 
     let total = 0, processed = 0;
+    let finished = false;
+    let handle = null;
     const finish = () => {
-      els.btn.disabled = false;
-      els.btn.textContent = els.btnLabel;
+      if (finished) return;
+      finished = true;
       setRunning(els.cancelId, false);
-      activeStream = null;
+      if (opts.onDone) opts.onDone();
     };
     setRunning(els.cancelId, true);
 
@@ -625,22 +666,164 @@ function makeConvertRunner(els) {
           break;
       }
     }, finish);
-    // Cancel must also reset the UI immediately — closing the stream alone would
-    // leave the button stuck on "Converting…".
-    activeStream = { close: () => { es.close(); appendLog(els.log, '\n⛔ Cancelled.', 'line-warn'); finish(); } };
+    // Closing the stream cancels the job on the server (it aborts on disconnect)
+    // and resets this tab's UI right away.
+    handle = {
+      close: () => {
+        if (finished) return;
+        es.close();
+        appendLog(els.log, '\n⛔ Cancelled.', 'line-warn');
+        finish();
+      },
+    };
+    return handle;
+  }
+
+  /** Clear the list and log (start of a new batch of downloads in this tab). */
+  function reset() {
+    els.log.textContent = '';
+    els.list.innerHTML = '';
+    nodes.clear();
+    queuedRows.clear();
+  }
+
+  /** Show a waiting job in this tab's list right away, with detail "queued". */
+  start.addQueued = (job) => {
+    const label = job.rowLabel || job.label;
+    queuedRows.set(job.key, label);
+    setState(label, 'queued', '…', job.rowLabel ? 'queued' : 'queued — tracks appear here when it starts');
+    const li = nodes.get(label);
+    if (!li.querySelector('.row-remove')) {
+      const x = document.createElement('button');
+      x.className = 'row-remove';
+      x.title = 'Remove from queue';
+      x.textContent = '✕';
+      li.appendChild(x);
+    }
+    li.querySelector('.row-remove').dataset.qkey = job.key;
   };
+  start.removeQueued = dropQueuedRow;
+  start.reset = reset;
+  return start;
 }
+
+// ─── Download queue (Spotify → MP3, Albums, Songs) ──────────────────────────
+// Downloads run one at a time. While one is running, each tab's download
+// button turns into "Add to queue", so you can line up individual songs from a
+// playlist or album, or whole playlists/albums, without waiting.
+//
+// A job is { key, label, tab, url, runner }: `key` identifies what is being
+// downloaded (to stop duplicates), `runner` is the tab's makeConvertRunner.
+const dlQueue = { current: null, pending: [] };
+const queueTabsThisBatch = new Set(); // tabs whose list already shows this batch's results
+const queueButtons = [];              // { btn, idleLabel(), currentKey() }
+
+function enqueueDownload(job) {
+  if (!job) return;
+  if (queueState(job.key)) return; // already downloading or queued
+  if (dlQueue.current) {
+    // First item of this batch for that tab: clear its old results first.
+    if (!queueTabsThisBatch.has(job.tab)) {
+      job.runner.reset();
+      queueTabsThisBatch.add(job.tab);
+    }
+    dlQueue.pending.push(job);
+    job.runner.addQueued(job);
+  } else {
+    startQueuedJob(job);
+  }
+  refreshQueueUi();
+}
+
+/** Take a job out of the queue (✕ / Clear queue) and drop its list row. */
+function removePendingJob(index) {
+  const [job] = dlQueue.pending.splice(index, 1);
+  if (job) job.runner.removeQueued(job.key);
+}
+
+function startQueuedJob(job) {
+  dlQueue.current = job;
+  const fresh = !queueTabsThisBatch.has(job.tab);
+  queueTabsThisBatch.add(job.tab);
+  job.handle = job.runner(job.url, {
+    fresh,
+    job,
+    label: job.label,
+    onDone: () => {
+      if (dlQueue.current !== job) return;
+      dlQueue.current = null;
+      const next = dlQueue.pending.shift();
+      if (next) startQueuedJob(next);
+      else queueTabsThisBatch.clear();
+      refreshQueueUi();
+    },
+  });
+}
+
+/** 'current' | 'pending' | null for a job key. */
+function queueState(key) {
+  if (!key) return null;
+  if (dlQueue.current && dlQueue.current.key === key) return 'current';
+  return dlQueue.pending.some((j) => j.key === key) ? 'pending' : null;
+}
+
+function registerQueueButton(btn, idleLabel, currentKey) {
+  queueButtons.push({ btn, idleLabel, currentKey });
+}
+
+function refreshQueueUi() {
+  // Buttons: normal label when idle, "Add to queue" while busy.
+  for (const { btn, idleLabel, currentKey } of queueButtons) {
+    const key = currentKey();
+    const state = queueState(key);
+    btn.disabled = !key || !!state;
+    btn.textContent =
+      state === 'current' ? 'Downloading…'
+      : state === 'pending' ? 'Queued'
+      : dlQueue.current ? 'Add to queue'
+      : idleLabel();
+  }
+
+  // Mark queued / downloading songs in the open tracklists.
+  document.querySelectorAll('.album-tracklist li[data-qkey]').forEach((li) => {
+    const state = queueState(li.dataset.qkey);
+    li.classList.toggle('q-current', state === 'current');
+    li.classList.toggle('q-pending', state === 'pending');
+  });
+}
+
+// The ✕ on a queued row in a tab's progress list removes that job from the queue.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.files .row-remove');
+  if (!btn) return;
+  const index = dlQueue.pending.findIndex((j) => j.key === btn.dataset.qkey);
+  if (index >= 0) removePendingJob(index);
+  refreshQueueUi();
+});
+
+// Cancel on a download tab stops that tab's current download only; the queue
+// then moves on to the next item.
+[['convert-cancel', 'convert'], ['album-cancel', 'album'], ['song-cancel', 'song']].forEach(([id, tab]) => {
+  document.getElementById(id).addEventListener('click', () => {
+    const job = dlQueue.current;
+    if (job && job.tab === tab && job.handle) job.handle.close();
+  });
+});
 
 // Convert tab (Spotify playlist → MP3)
 const playlistRunnerEls = {
   list: $('#convert-list'), log: convLog, bar: $('#convert-bar'),
   progress: $('#convert-progress'), summary: $('#convert-summary'),
-  btn: $('#convert-btn'), btnLabel: 'Convert', cancelId: 'convert-cancel',
+  cancelId: 'convert-cancel',
 };
 const runPlaylistConvert = makeConvertRunner(playlistRunnerEls);
-$('#convert-btn').addEventListener('click', () => {
+
+const playlistSongKey = (t) => `song:${t.title}|${t.artist || ''}`;
+
+/** The download job for the current playlist selection (one song or the whole playlist). */
+function playlistJob() {
   const playlist = resolvedPlaylistInput();
-  if (!playlist) { $('#playlist-input').focus(); return; }
+  if (!playlist) return null;
   const quality = $('#convert-quality').value;
   // Only honour a picked song if the preview still shows this playlist.
   const picked = playlistPickedTrack >= 0 && playlistPreviewFor === playlist ? playlistTracks[playlistPickedTrack] : null;
@@ -649,11 +832,36 @@ $('#convert-btn').addEventListener('click', () => {
     const qs = new URLSearchParams({
       title: picked.title, artist: picked.artist || '', duration: String(picked.durationMs || 0), quality,
     });
-    runPlaylistConvert(`/api/convert-song?${qs.toString()}`);
-    return;
+    return {
+      key: playlistSongKey(picked),
+      label: `${picked.title}${picked.artist ? ` — ${picked.artist}` : ''}`,
+      rowLabel: `${picked.artist || ''} - ${picked.title}`, // the server's progress label
+      tab: 'convert', runner: runPlaylistConvert,
+      url: `/api/convert-song?${qs.toString()}`,
+    };
   }
-  runPlaylistConvert(`/api/convert?${new URLSearchParams({ playlist, quality }).toString()}`);
+  const name = (playlistPreviewFor === playlist && $('#playlist-chosen .album-preview-title')?.textContent)
+    || (playlistChosen && playlistChosen.name) || playlist;
+  return {
+    key: `playlist:${playlist}`,
+    label: `Playlist: ${name}`,
+    tab: 'convert', runner: runPlaylistConvert,
+    url: `/api/convert?${new URLSearchParams({ playlist, quality }).toString()}`,
+  };
+}
+
+$('#convert-btn').addEventListener('click', () => {
+  const job = playlistJob();
+  if (!job) { $('#playlist-input').focus(); return; }
+  enqueueDownload(job);
 });
+registerQueueButton(
+  $('#convert-btn'),
+  () => (playlistPickedTrack >= 0 ? 'Download song' : 'Convert'),
+  // The box may hold a half-typed search; let the click focus it rather than disabling.
+  () => (playlistJob() || { key: 'empty-playlist' }).key
+);
+$('#playlist-input').addEventListener('input', refreshQueueUi);
 
 // Playlist preview: cover + newest-first tracklist, 15 at a time.
 const PLAYLIST_PAGE = 15;
@@ -721,6 +929,7 @@ function renderMorePlaylistTracks() {
     const t = playlistTracks[i];
     const li = document.createElement('li');
     li.dataset.index = String(i);
+    li.dataset.qkey = playlistSongKey(t);
     li.title = 'Click to download just this song';
     const dur = fmtDuration(t.durationMs);
     const added = t.addedAt ? new Date(t.addedAt) : null;
@@ -735,6 +944,7 @@ function renderMorePlaylistTracks() {
   }
   playlistShown = end;
   box.querySelector('.load-more').classList.toggle('hidden', playlistShown >= playlistTracks.length);
+  refreshQueueUi();
 }
 
 // Clicking a track picks it for a single-song download; clicking it again goes
@@ -744,8 +954,7 @@ function setPlaylistPick(index) {
   document.querySelectorAll('#playlist-chosen .album-tracklist li').forEach((li) => {
     li.classList.toggle('picked', Number(li.dataset.index) === index);
   });
-  playlistRunnerEls.btnLabel = index >= 0 ? 'Download song' : 'Convert';
-  if (playlistRunnerEls.btn.textContent !== 'Converting…') playlistRunnerEls.btn.textContent = playlistRunnerEls.btnLabel;
+  refreshQueueUi();
 }
 
 $('#playlist-chosen').addEventListener('click', (e) => {
@@ -763,13 +972,14 @@ let albumChosenId = '';
 let albumChosenSource = 'discogs';
 let albumChosenMeta = { name: '', year: '' };
 let albumPickedTrack = -1; // tracklist index picked for a single-song download, or -1 for the whole album
+let albumTracks = [];      // tracklist of the previewed album (for queue labels)
 $('#clear-album-console').addEventListener('click', () => { albumLog.textContent = ''; });
 
 async function searchAlbums() {
   const q = $('#album-search').value.trim();
   if (!q) { $('#album-search').focus(); return; }
 
-  const source = $('#album-source').value === 'spotify' ? 'spotify' : 'discogs';
+  const source = pickSource($('#album-source').value);
   const results = $('#album-results');
   results.classList.remove('hidden');
   results.innerHTML = '<option disabled>Searching…</option>';
@@ -783,7 +993,7 @@ async function searchAlbums() {
   };
 
   try {
-    const endpoint = source === 'spotify' ? '/api/spotify/search-albums' : '/api/discogs/search-albums';
+    const endpoint = SOURCE_ENDPOINTS[source];
     const resp = await fetch(`${endpoint}?q=${encodeURIComponent(q)}`);
     const data = await resp.json();
     if (!resp.ok || data.error) { showMsg(data.error || 'Search failed'); return; }
@@ -838,7 +1048,7 @@ async function showAlbumPreview(opt) {
          <ol class="album-tracklist"></ol>
        </div>
      </div>`;
-  if (image) { const img = box.querySelector('.album-cover'); img.src = image; }
+  if (image) { const img = box.querySelector('.album-cover'); hideBrokenCover(img); img.src = image; }
   box.querySelector('.album-preview-title').textContent = heading;
 
   try {
@@ -850,15 +1060,18 @@ async function showAlbumPreview(opt) {
     sub.textContent = `via ${albumChosenSource} · ${data.tracks.length} tracks`;
     const ol = box.querySelector('.album-tracklist');
     ol.innerHTML = '';
+    albumTracks = data.tracks;
     data.tracks.forEach((t, i) => {
       const li = document.createElement('li');
       li.dataset.index = String(i);
+      li.dataset.qkey = albumTrackKey(i);
       li.title = 'Click to download just this song';
       const dur = fmtDuration(t.durationMs);
       li.innerHTML = `<span class="trk-title"></span>${dur ? `<span class="trk-dur">${dur}</span>` : ''}`;
       li.querySelector('.trk-title').textContent = t.title;
       ol.appendChild(li);
     });
+    refreshQueueUi();
   } catch (err) {
     const sub = box.querySelector('.album-preview-sub');
     if (sub) sub.textContent = `via ${albumChosenSource} · ${err instanceof Error ? err.message : err}`;
@@ -872,9 +1085,7 @@ function setAlbumPick(index) {
   document.querySelectorAll('#album-chosen .album-tracklist li').forEach((li) => {
     li.classList.toggle('picked', Number(li.dataset.index) === index);
   });
-  albumRunnerEls.btnLabel = index >= 0 ? 'Download song' : 'Download album';
-  // Don't clobber the "Converting…" label while a run is in progress.
-  if (albumRunnerEls.btn.textContent !== 'Converting…') albumRunnerEls.btn.textContent = albumRunnerEls.btnLabel;
+  refreshQueueUi();
 }
 $('#album-chosen').addEventListener('click', (e) => {
   const li = e.target.closest('.album-tracklist li');
@@ -887,28 +1098,57 @@ $('#album-results').addEventListener('change', (e) => {
   const opt = e.target.selectedOptions[0];
   if (!opt || !opt.value) return;
   albumChosenId = opt.value;
-  albumChosenSource = opt.dataset.source || 'discogs';
-  $('#album-convert-btn').disabled = false;
+  albumChosenSource = pickSource(opt.dataset.source);
+  albumTracks = [];
   showAlbumPreview(opt);
 });
 
 const albumRunnerEls = {
   list: $('#album-list'), log: albumLog, bar: $('#album-bar'),
   progress: $('#album-progress'), summary: $('#album-summary'),
-  btn: $('#album-convert-btn'), btnLabel: 'Download album', cancelId: 'album-cancel',
+  cancelId: 'album-cancel',
 };
 const runAlbumConvert = makeConvertRunner(albumRunnerEls);
-$('#album-convert-btn').addEventListener('click', () => {
-  if (!albumChosenId) { $('#album-search').focus(); return; }
+
+function albumTrackKey(index) {
+  return `album:${albumChosenSource}:${albumChosenId}${index >= 0 ? `#${index}` : ''}`;
+}
+
+/** The download job for the current album selection (one track or the whole album). */
+function albumJob() {
+  if (!albumChosenId) return null;
   const quality = $('#album-quality').value;
   const qs = new URLSearchParams({ album: albumChosenId, quality, source: albumChosenSource });
+  const albumName = albumChosenMeta.name || 'album';
+  let label = `Album: ${albumName}`;
+  let rowLabel; // set for a single track: the server's "Artist - Title" progress label
   if (albumPickedTrack >= 0) {
     qs.set('track', String(albumPickedTrack));
     qs.set('albumName', albumChosenMeta.name);
     if (albumChosenMeta.year) qs.set('year', albumChosenMeta.year);
+    const t = albumTracks[albumPickedTrack];
+    label = `${t ? t.title : `Track ${albumPickedTrack + 1}`} (${albumName})`;
+    if (t) rowLabel = `${t.artist || ''} - ${t.title}`;
   }
-  runAlbumConvert(`/api/convert-album?${qs.toString()}`);
+  return {
+    key: albumTrackKey(albumPickedTrack),
+    label,
+    rowLabel,
+    tab: 'album', runner: runAlbumConvert,
+    url: `/api/convert-album?${qs.toString()}`,
+  };
+}
+
+$('#album-convert-btn').addEventListener('click', () => {
+  const job = albumJob();
+  if (!job) { $('#album-search').focus(); return; }
+  enqueueDownload(job);
 });
+registerQueueButton(
+  $('#album-convert-btn'),
+  () => (albumPickedTrack >= 0 ? 'Download song' : 'Download album'),
+  () => albumJob()?.key
+);
 
 // ─── Songs tab (search a single track → tagged MP3) ──────────────────────────
 const songLog = $('#song-log');
@@ -918,7 +1158,8 @@ $('#clear-song-console').addEventListener('click', () => { songLog.textContent =
 const songSearch = { q: '', source: 'discogs', nextOffset: 0, keys: new Set() };
 
 function appendSongOption(results, s, source, keys) {
-  const key = `${(s.title || '').toLowerCase()}|${(s.artist || '').toLowerCase()}`;
+  // Include the album so a song on two albums shows both versions.
+  const key = `${(s.title || '').toLowerCase()}|${(s.artist || '').toLowerCase()}|${(s.album || '').toLowerCase()}`;
   if (keys.has(key)) return false;
   keys.add(key);
   const o = document.createElement('option');
@@ -949,7 +1190,7 @@ async function runSongSearch(append) {
   } else {
     q = $('#song-search').value.trim();
     if (!q) { $('#song-search').focus(); return; }
-    source = $('#song-source').value === 'spotify' ? 'spotify' : 'discogs';
+    source = pickSource($('#song-source').value);
     songSearch.q = q; songSearch.source = source; songSearch.nextOffset = 0; songSearch.keys = new Set();
     results.classList.remove('hidden');
     results.innerHTML = '<option disabled>Searching…</option>';
@@ -1010,7 +1251,7 @@ function showSongPreview(opt) {
          <dl class="song-meta"></dl>
        </div>
      </div>`;
-  if (image) box.querySelector('.album-cover').src = image;
+  if (image) { const img = box.querySelector('.album-cover'); hideBrokenCover(img); img.src = image; }
   box.querySelector('.album-preview-title').textContent = title;
   const dl = box.querySelector('.song-meta');
   rows.forEach(([k, v]) => {
@@ -1035,17 +1276,18 @@ $('#song-results').addEventListener('change', (e) => {
     trackNumber: opt.dataset.track || '',
     cover: opt.dataset.image || '',
   };
-  $('#song-convert-btn').disabled = false;
   showSongPreview(opt);
+  refreshQueueUi();
 });
 
 const runSongConvert = makeConvertRunner({
   list: $('#song-list'), log: songLog, bar: $('#song-bar'),
   progress: $('#song-progress'), summary: $('#song-summary'),
-  btn: $('#song-convert-btn'), btnLabel: 'Download song', cancelId: 'song-cancel',
+  cancelId: 'song-cancel',
 });
-$('#song-convert-btn').addEventListener('click', () => {
-  if (!songChosen) { $('#song-search').focus(); return; }
+/** The download job for the selected song. */
+function songJob() {
+  if (!songChosen) return null;
   const qs = new URLSearchParams({
     title: songChosen.title,
     artist: songChosen.artist || '',
@@ -1056,8 +1298,21 @@ $('#song-convert-btn').addEventListener('click', () => {
     track: songChosen.trackNumber || '',
     cover: songChosen.cover || '',
   });
-  runSongConvert(`/api/convert-song?${qs.toString()}`);
+  return {
+    key: `song:${songChosen.title}|${songChosen.artist || ''}|${songChosen.album || ''}`,
+    label: `${songChosen.title}${songChosen.artist ? ` — ${songChosen.artist}` : ''}`,
+    rowLabel: `${songChosen.artist || ''} - ${songChosen.title}`,
+    tab: 'song', runner: runSongConvert,
+    url: `/api/convert-song?${qs.toString()}`,
+  };
+}
+
+$('#song-convert-btn').addEventListener('click', () => {
+  const job = songJob();
+  if (!job) { $('#song-search').focus(); return; }
+  enqueueDownload(job);
 });
+registerQueueButton($('#song-convert-btn'), () => 'Download song', () => songJob()?.key);
 
 // ─── Retag tab (fix mistakes) ───────────────────────────────────────────────
 const retagListEl = $('#retag-list');
@@ -1454,3 +1709,4 @@ $('#review-retag-btn').addEventListener('click', () => {
 
 // ─── Init ───────────────────────────────────────────────────────────────────
 loadHeader();
+refreshQueueUi();

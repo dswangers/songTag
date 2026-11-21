@@ -6,9 +6,10 @@ import { scanMp3Files } from './scanner';
 import { tagFiles, retagFiles, getRetagCandidates } from './tagService';
 import { isFullyTagged, readExistingTags, applyManualTags } from './tagger';
 import { downloadAudio, checkDependencies } from './downloadService';
-import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertSong, type AlbumTrackPick } from './convertService';
+import { convertPlaylist, convertAlbum, convertDiscogsAlbum, convertMusicBrainzAlbum, convertSong, type AlbumTrackPick } from './convertService';
 import { searchSpotifyAlbums, searchSpotifyTracks } from './providers/spotify';
 import { searchDiscogsAlbums, fetchDiscogsAlbumTracks, searchDiscogsSongs } from './providers/discogs';
+import { searchMusicBrainzAlbums, fetchMusicBrainzAlbumTracks, searchMusicBrainzSongs } from './providers/musicbrainz';
 import { fetchAlbumViaEmbed, fetchPlaylistViaEmbed } from './spotifyEmbed';
 import {
   getAuthorizeUrl,
@@ -24,12 +25,15 @@ const app = express();
 const PORT = parseInt(process.env.PORT ?? '4000', 10);
 
 /**
- * Default search source for the Songs/Albums tabs, driven by API_PROVIDER.
- * Spotify when the provider is Spotify, otherwise Discogs (there is no
- * MusicBrainz song/album picker, so Discogs is the sensible fallback).
+ * Search sources for the Songs/Albums tabs. The default follows API_PROVIDER.
  */
-const defaultSource: 'spotify' | 'discogs' =
-  config.provider === 'spotify' ? 'spotify' : 'discogs';
+type SearchSource = 'spotify' | 'discogs' | 'musicbrainz';
+const defaultSource: SearchSource = config.provider;
+
+function parseSource(raw: unknown): SearchSource {
+  const s = String(raw ?? defaultSource);
+  return s === 'spotify' || s === 'discogs' || s === 'musicbrainz' ? s : defaultSource;
+}
 
 // Album covers are sent as base64 data URLs for manual tagging, so raise the
 // JSON body limit well above the 100kb default.
@@ -60,10 +64,17 @@ function openSse(res: Response): (event: unknown) => void {
 
 // Track in-flight jobs so they can be cancelled from the UI.
 const activeJobs = new Set<AbortController>();
-function beginJob(req: Request): AbortController {
+/**
+ * Start a cancellable job. Every job is cancelled when its client disconnects.
+ * Queued downloads (convert endpoints) pass `cancelAll: false`: the browser
+ * cancels one by closing its own stream, so the Cancel-all endpoint used by the
+ * other tabs must not kill them.
+ */
+function beginJob(req: Request, opts: { cancelAll?: boolean } = {}): AbortController {
   const ac = new AbortController();
-  activeJobs.add(ac);
+  if (opts.cancelAll !== false) activeJobs.add(ac);
   req.on('close', () => ac.abort()); // client disconnect also cancels
+  req.res?.on('close', () => ac.abort()); // (fires reliably when the SSE stream is dropped)
   return ac;
 }
 function endJob(ac: AbortController): void {
@@ -479,7 +490,7 @@ app.get('/api/convert', async (req: Request, res: Response) => {
     return;
   }
 
-  const job = beginJob(req);
+  const job = beginJob(req, { cancelAll: false });
   try {
     await convertPlaylist(playlist, config.mp3Folder, quality, send, job.signal);
   } catch (err) {
@@ -518,18 +529,33 @@ app.get('/api/discogs/search-albums', async (req: Request, res: Response) => {
   }
 });
 
-/** Search for individual tracks (for the Songs tab), from either source. */
+/** Search MusicBrainz for albums (for the Albums tab). */
+app.get('/api/musicbrainz/search-albums', async (req: Request, res: Response) => {
+  const q = String(req.query.q ?? '').trim();
+  if (!q) {
+    res.status(400).json({ error: 'No search query provided.' });
+    return;
+  }
+  try {
+    res.json({ albums: await searchMusicBrainzAlbums(q) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/** Search for individual tracks (for the Songs tab), from any source. */
 app.get('/api/songs/search', async (req: Request, res: Response) => {
   const q = String(req.query.q ?? '').trim();
-  const source = String(req.query.source ?? defaultSource) === 'spotify' ? 'spotify' : 'discogs';
+  const source = parseSource(req.query.source);
   const offset = Math.max(0, parseInt(String(req.query.offset ?? '0'), 10) || 0);
   if (!q) {
     res.status(400).json({ error: 'No search query provided.' });
     return;
   }
   try {
-    const result = source === 'spotify'
-      ? await searchSpotifyTracks(q, 10, offset)
+    const result =
+      source === 'spotify' ? await searchSpotifyTracks(q, 10, offset)
+      : source === 'musicbrainz' ? await searchMusicBrainzSongs(q, () => {}, offset)
       : await searchDiscogsSongs(q, () => {}, offset);
     res.json(result); // { songs, nextOffset, hasMore }
   } catch (err) {
@@ -555,7 +581,7 @@ app.get('/api/convert-song', async (req: Request, res: Response) => {
     return;
   }
 
-  const job = beginJob(req);
+  const job = beginJob(req, { cancelAll: false });
   try {
     await convertSong(
       { title, artist, durationMs: duration, album, year, trackNumber, coverArtUrl },
@@ -572,19 +598,19 @@ app.get('/api/convert-song', async (req: Request, res: Response) => {
   }
 });
 
-/** Album tracklist preview (name + tracks) for the Albums tab, from either source. */
+/** Album tracklist preview (name + tracks) for the Albums tab, from any source. */
 app.get('/api/album-tracks', async (req: Request, res: Response) => {
   const album = String(req.query.album ?? '').trim();
-  const source = String(req.query.source ?? defaultSource) === 'discogs' ? 'discogs' : 'spotify';
+  const source = parseSource(req.query.source);
   if (!album) {
     res.status(400).json({ error: 'No album provided.' });
     return;
   }
   try {
     const { name, tracks } =
-      source === 'discogs'
-        ? await fetchDiscogsAlbumTracks(album)
-        : await fetchAlbumViaEmbed(album);
+      source === 'discogs' ? await fetchDiscogsAlbumTracks(album)
+      : source === 'musicbrainz' ? await fetchMusicBrainzAlbumTracks(album)
+      : await fetchAlbumViaEmbed(album);
     res.json({
       name,
       tracks: tracks.map((t) => ({ title: t.title, artist: t.artist, durationMs: t.durationMs })),
@@ -594,11 +620,11 @@ app.get('/api/album-tracks', async (req: Request, res: Response) => {
   }
 });
 
-/** SSE: convert a whole album (Spotify or Discogs) — or one of its tracks — into tagged MP3s. */
+/** SSE: convert a whole album (Spotify, Discogs or MusicBrainz) — or one of its tracks — into tagged MP3s. */
 app.get('/api/convert-album', async (req: Request, res: Response) => {
   const album = String(req.query.album ?? '').trim();
   const quality = String(req.query.quality ?? '0');
-  const source = String(req.query.source ?? defaultSource) === 'discogs' ? 'discogs' : 'spotify';
+  const source = parseSource(req.query.source);
   const send = openSse(res);
 
   if (!album) {
@@ -618,10 +644,12 @@ app.get('/api/convert-album', async (req: Request, res: Response) => {
       }
     : undefined;
 
-  const job = beginJob(req);
+  const job = beginJob(req, { cancelAll: false });
   try {
     if (source === 'discogs') {
       await convertDiscogsAlbum(album, config.mp3Folder, quality, send, job.signal, pick);
+    } else if (source === 'musicbrainz') {
+      await convertMusicBrainzAlbum(album, config.mp3Folder, quality, send, job.signal, pick);
     } else {
       await convertAlbum(album, config.mp3Folder, quality, send, job.signal, pick);
     }

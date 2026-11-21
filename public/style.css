@@ -507,3 +507,33 @@ button#retag-clear {
   align-items: center;
   gap: 12px;
 }
+
+/* Songs in an open tracklist that are downloading / waiting in the queue. */
+.album-tracklist li.q-current::after,
+.album-tracklist li.q-pending::after {
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.album-tracklist li.q-current::after { content: "downloading"; background: rgba(29, 185, 84, 0.18); color: var(--accent); }
+.album-tracklist li.q-pending::after { content: "queued"; background: var(--panel-2); color: var(--muted); }
+
+/* ✕ on a queued row in a progress list: shown on hover, removes it from the queue. */
+.files li .row-remove {
+  visibility: hidden;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 1px 7px;
+  font-size: 12px;
+}
+.files li.queued:hover .row-remove,
+.files li.queued .row-remove:focus-visible { visibility: visible; }
+.files li:not(.queued) .row-remove { display: none; }
+.files li .row-remove:hover { border-color: var(--error); color: var(--error); }
+.files li.queued { opacity: 0.7; border-style: dashed; }
+.files li.queued .status { color: var(--muted); }
